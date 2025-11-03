@@ -1,19 +1,25 @@
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks, WebSocket, WebSocketDisconnect
 from starlette.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime
 import httpx
+import math
 from contextlib import asynccontextmanager
+import asyncio
 
 from database import (
     get_session,
     IncidentDB,
     AgentDB,
-    create_tables
+    ResponseMetricDB,
+    IncidentHistoryDB,
+    create_tables,
+    SessionLocal
 )
 
+# --- Lifespan/Seeding ---
 @asynccontextmanager
 async def lifespan(_):
     create_tables()
@@ -29,7 +35,6 @@ async def lifespan(_):
     yield
 
 app = FastAPI(title="Smart City AI Backend", lifespan=lifespan)
-
 app.add_middleware(CORSMiddleware,  # type: ignore
     allow_origins=["*"],
     allow_credentials=True,
@@ -37,6 +42,7 @@ app.add_middleware(CORSMiddleware,  # type: ignore
     allow_headers=["*"],
 )
 
+# --- Models ---
 class IncidentLoc(BaseModel):
     lat: float
     lon: float
@@ -73,7 +79,15 @@ class StatsOut(BaseModel):
     average_response_time: float
     average_efficiency: float
 
-# Helper - always use instance fields, never class fields!
+class IncidentHistoryOut(BaseModel):
+    id: int
+    incident_id: int
+    agent_id: Optional[int]
+    action: str
+    detail: str
+    timestamp: datetime
+
+# --- Helper functions ---
 def to_incident_out(row) -> IncidentOut:
     return IncidentOut(
         id=int(row.id),
@@ -98,6 +112,41 @@ def to_agent_out(row) -> AgentOut:
         successful_responses=int(row.successful_responses or 0),
         updated_at=row.updated_at
     )
+
+def to_history_out(row) -> IncidentHistoryOut:
+    return IncidentHistoryOut(
+        id=int(row.id),
+        incident_id=int(row.incident_id),
+        agent_id=int(row.agent_id) if row.agent_id is not None else None,
+        action=str(row.action or ""),
+        detail=str(row.detail or ""),
+        timestamp=row.timestamp
+    )
+
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371  # earth radius in km
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c
+
+def log_event(db, incident_id, agent_id, action, detail):
+    event = IncidentHistoryDB(
+        incident_id=incident_id, agent_id=agent_id,
+        action=action, detail=detail, timestamp=datetime.now()
+    )
+    db.add(event)
+    db.commit()
+
+# --- REST Endpoints ---
+
+@app.post("/classify-incident")
+def classify_incident(data: dict):
+    desc = data.get("desc", "")
+    # Replace this with actual ML model inference or external API call for real AI
+    label = "police" if "theft" in desc.lower() else "fire" if "fire" in desc.lower() else "medical"
+    return {"category": label, "confidence": 0.95}
 
 @app.get("/search-address")
 def search_address(query: str = Query(..., min_length=3)):
@@ -125,12 +174,22 @@ def root():
 def health():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
+@app.get("/healthz")
+def healthz():
+    try:
+        db = next(get_session())
+        agent_count = db.query(AgentDB).count()
+        db.close()
+        return {"status": "ok", "agents": agent_count}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}, 503
+
 @app.get("/incidents", response_model=List[IncidentOut])
 def get_incidents(db: Session = Depends(get_session)):
     return [to_incident_out(row) for row in db.query(IncidentDB).all()]
 
 @app.post("/incidents", response_model=IncidentOut)
-def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
+def create_incident(incident: IncidentIn, background_tasks: BackgroundTasks, db: Session = Depends(get_session)):
     new_incident = IncidentDB(
         type=incident.type,
         lat=incident.location.lat,
@@ -142,7 +201,21 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
     db.add(new_incident)
     db.commit()
     db.refresh(new_incident)
+    log_event(db, new_incident.id, None, "CREATE_INCIDENT", f"New incident created: {new_incident.description}")
+    # Background auto-resolve (10min)
+    background_tasks.add_task(auto_resolve_incident, new_incident.id)
     return to_incident_out(new_incident)
+
+def auto_resolve_incident(incident_id):
+    import time
+    time.sleep(600)  # 10 minutes
+    db = SessionLocal()
+    incident = db.query(IncidentDB).filter(IncidentDB.id == incident_id).first()
+    if incident and incident.status == "active":
+        incident.status = "auto-resolved"
+        db.commit()
+        log_event(db, incident.id, None, "AUTO_RESOLVE", "Incident auto-resolved after 10min")
+    db.close()
 
 @app.put("/incidents/{incident_id}/resolve", response_model=IncidentOut)
 def resolve_incident(incident_id: int, db: Session = Depends(get_session)):
@@ -150,9 +223,44 @@ def resolve_incident(incident_id: int, db: Session = Depends(get_session)):
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     incident.status = "resolved"
+    agent = db.query(AgentDB).filter(AgentDB.current_incident == str(incident_id), AgentDB.status == "Responding").first()
+    if agent:
+        agent.status = "Available"
+        agent.current_incident = None
+        agent.decision = f"Incident {incident_id} resolved at {datetime.now().isoformat()}"
+        agent.successful_responses += 1
+        agent.updated_at = datetime.now()
+        db.commit()
+        log_event(db, incident_id, agent.id, "RESOLVE", f"Incident resolved and agent {agent.name} released")
     db.commit()
     db.refresh(incident)
     return to_incident_out(incident)
+
+@app.post("/assign-agent", response_model=AgentOut)
+def assign_agent(incident_id: int, db: Session = Depends(get_session)):
+    incident = db.query(IncidentDB).filter(IncidentDB.id == incident_id).first()
+    agents = db.query(AgentDB).filter(AgentDB.status == "Available").all()
+    if not incident or not agents:
+        raise HTTPException(404, "No available agent or incident not found")
+    # Find closest agent
+    min_dist = float('inf')
+    chosen = None
+    for a in agents:
+        dist = haversine(a.lat or 0, a.lon or 0, incident.lat, incident.lon)
+        if dist < min_dist:
+            min_dist = dist
+            chosen = a
+    if chosen is None:
+        raise HTTPException(404, "No available agent")
+    chosen.status = "Responding"
+    chosen.current_incident = str(incident_id)
+    chosen.decision = f"Assigned to incident {incident_id} at {datetime.now().isoformat()} (distance: {min_dist:.2f}km)"
+    chosen.response_time = min_dist
+    chosen.updated_at = datetime.now()
+    chosen.total_responses += 1
+    db.commit()
+    log_event(db, incident_id, chosen.id, "ASSIGN", chosen.decision)
+    return to_agent_out(chosen)
 
 @app.get("/agents", response_model=List[AgentOut])
 def get_agents(db: Session = Depends(get_session)):
@@ -163,10 +271,10 @@ def get_stats(db: Session = Depends(get_session)):
     incs = db.query(IncidentDB).all()
     agents = db.query(AgentDB).all()
     total = len(incs)
-    active = len([i for i in incs if str(getattr(i, "status", "")) == "active"])
-    resolved = len([i for i in incs if str(getattr(i, "status", "")) == "resolved"])
+    active = len([i for i in incs if str(getattr(i, "status", "")).lower() == "active"])
+    resolved = len([i for i in incs if str(getattr(i, "status", "")).lower() == "resolved"])
     t_agents = len(agents)
-    a_agents = len([a for a in agents if str(getattr(a, "status", "")) == "Responding"])
+    a_agents = len([a for a in agents if str(getattr(a, "status", "")).lower() in ("responding", "active", "busy")])
     avg_resp = sum([float(getattr(a, "response_time", 0)) for a in agents]) / t_agents if t_agents else 0.0
     avg_eff = sum([float(getattr(a, "efficiency", 0)) for a in agents]) / t_agents if t_agents else 0.0
     return StatsOut(
@@ -178,6 +286,25 @@ def get_stats(db: Session = Depends(get_session)):
         average_response_time=avg_resp,
         average_efficiency=avg_eff
     )
+
+@app.get("/incident-history", response_model=List[IncidentHistoryOut])
+def incident_history(db: Session = Depends(get_session)):
+    return [to_history_out(row) for row in db.query(IncidentHistoryDB).order_by(IncidentHistoryDB.timestamp.desc()).limit(100).all()]
+
+# --- Real-Time: WebSocket Echo for demo ---
+@app.websocket("/ws/updates")
+async def ws_updates(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            await asyncio.sleep(1)
+            # Example: push agent count (could add more stats here)
+            db = SessionLocal()
+            current_agents = db.query(AgentDB).count()
+            await websocket.send_json({"time": datetime.now().isoformat(), "agents": current_agents})
+            db.close()
+    except WebSocketDisconnect:
+        pass
 
 if __name__ == "__main__":
     import uvicorn

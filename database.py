@@ -52,5 +52,15 @@ class ResponseMetricDB(Base):
     was_successful = Column(Boolean, default=True)
     timestamp = Column(DateTime, default=datetime.now, index=True)
 
+# New: Incident history table
+class IncidentHistoryDB(Base):
+    __tablename__ = "incident_history"
+    id = Column(Integer, primary_key=True, index=True)
+    incident_id = Column(Integer, index=True)
+    agent_id = Column(Integer, index=True, nullable=True)
+    action = Column(String)
+    detail = Column(String)
+    timestamp = Column(DateTime, default=datetime.now, index=True)
+
 def create_tables():
     Base.metadata.create_all(bind=engine)
