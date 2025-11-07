@@ -93,6 +93,8 @@ class AgentOut(BaseModel):
     total_responses: int
     successful_responses: int
     updated_at: Optional[datetime]
+    lat: float  # ← ADD THIS
+    lon: float  # ← ADD THIS
 
 
 class StatsOut(BaseModel):
@@ -138,7 +140,9 @@ def to_agent_out(row) -> AgentOut:
         efficiency=float(row.efficiency or 0),
         total_responses=int(row.total_responses or 0),
         successful_responses=int(row.successful_responses or 0),
-        updated_at=row.updated_at
+        updated_at=row.updated_at,
+        lat=float(row.lat or 0),  # ← ADD THIS
+        lon=float(row.lon or 0)  # ← ADD THIS
     )
 
 
