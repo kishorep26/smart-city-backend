@@ -3,6 +3,7 @@ from starlette.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from datetime import datetime
 import httpx
 import math
@@ -22,22 +23,39 @@ from database import (
 # --- Lifespan/Seeding ---
 @asynccontextmanager
 async def lifespan(_):
-    create_tables()
     db = next(get_session())
+
+    # Force drop tables to recreate with new schema (includes lat/lon)
+    try:
+        print("🔄 Dropping old tables...")
+        db.execute(text("DROP TABLE IF EXISTS incident_history CASCADE"))
+        db.execute(text("DROP TABLE IF EXISTS agents CASCADE"))
+        db.execute(text("DROP TABLE IF EXISTS incidents CASCADE"))
+        db.commit()
+        print("✅ Old tables dropped")
+    except Exception as e:
+        print(f"⚠️ Drop error: {e}")
+
+    # Create tables with new schema
+    create_tables()
+    print("✅ Tables created with new schema")
+
+    # Seed agents with locations
     if db.query(AgentDB).count() == 0:
-        # 🔥 FIXED: Added realistic lat/lon for each agent
         db.add_all([
-            AgentDB(name="Fire Agent", icon="🚒", lat=40.7580, lon=-73.9855),  # Times Square area
-            AgentDB(name="Police Agent", icon="🚓", lat=40.7489, lon=-73.9680),  # Empire State area
-            AgentDB(name="Ambulance Agent", icon="🚑", lat=40.7614, lon=-73.9776),  # Central Park area
+            AgentDB(name="Fire Agent", icon="🚒", lat=40.7580, lon=-73.9855),
+            AgentDB(name="Police Agent", icon="🚓", lat=40.7489, lon=-73.9680),
+            AgentDB(name="Ambulance Agent", icon="🚑", lat=40.7614, lon=-73.9776),
         ])
         db.commit()
+        print("✅ Agents seeded with locations")
+
     db.close()
     yield
 
 
 app = FastAPI(title="Smart City AI Backend", lifespan=lifespan)
-app.add_middleware(CORSMiddleware,  # type: ignore
+app.add_middleware(CORSMiddleware,
                    allow_origins=["*"],
                    allow_credentials=True,
                    allow_methods=["*"],
@@ -153,7 +171,6 @@ def log_event(db, incident_id, agent_id, action, detail):
     db.commit()
 
 
-# 🔥 NEW: Auto-assignment helper function
 def assign_agent_to_incident(incident_id: int, db: Session):
     """Automatically assign closest available agent to incident"""
     incident = db.query(IncidentDB).filter(IncidentDB.id == incident_id).first()
@@ -193,7 +210,6 @@ def assign_agent_to_incident(incident_id: int, db: Session):
 @app.post("/classify-incident")
 def classify_incident(data: dict):
     desc = data.get("desc", "")
-    # Replace this with actual ML model inference or external API call for real AI
     label = "police" if "theft" in desc.lower() else "fire" if "fire" in desc.lower() else "medical"
     return {"category": label, "confidence": 0.95}
 
@@ -227,8 +243,6 @@ def health():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 
-# 🔥 REMOVED: /healthz (duplicate of /health)
-
 @app.get("/incidents", response_model=List[IncidentOut])
 def get_incidents(db: Session = Depends(get_session)):
     return [to_incident_out(row) for row in db.query(IncidentDB).all()]
@@ -249,7 +263,7 @@ def create_incident(incident: IncidentIn, background_tasks: BackgroundTasks, db:
     db.refresh(new_incident)
     log_event(db, new_incident.id, None, "CREATE_INCIDENT", f"New incident created: {new_incident.description}")
 
-    # 🔥 FIXED: Auto-assign agent immediately after incident creation
+    # Auto-assign agent immediately after incident creation
     try:
         assigned_agent = assign_agent_to_incident(new_incident.id, db)
         if assigned_agent:
@@ -364,7 +378,6 @@ async def ws_updates(websocket: WebSocket):
     try:
         while True:
             await asyncio.sleep(1)
-            # Example: push agent count (could add more stats here)
             db = SessionLocal()
             current_agents = db.query(AgentDB).count()
             await websocket.send_json({"time": datetime.now().isoformat(), "agents": current_agents})

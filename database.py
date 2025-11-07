@@ -42,13 +42,8 @@ class AgentDB(Base):
     total_responses = Column(Integer, default=0)
     successful_responses = Column(Integer, default=0)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-    lat = Column(Float, default=0.0)  # 🔥 ADDED
-    lon = Column(Float, default=0.0)  # 🔥 ADDED
-
-# 🔥 REMOVED ResponseMetricDB - Not being used anywhere
-# class ResponseMetricDB(Base):
-#     __tablename__ = "response_metrics"
-#     ...
+    lat = Column(Float, default=0.0)
+    lon = Column(Float, default=0.0)
 
 class IncidentHistoryDB(Base):
     __tablename__ = "incident_history"
