@@ -24,40 +24,20 @@ from database import (
 # --- Lifespan/Seeding ---
 @asynccontextmanager
 async def lifespan(_):
+    create_tables()  # Only create if not exists
     db = next(get_session())
 
-    # Force drop tables to recreate with new schema (includes lat/lon)
-    try:
-        print("🔄 Dropping old tables...")
-        db.execute(text("DROP TABLE IF EXISTS incident_history CASCADE"))
-        db.execute(text("DROP TABLE IF EXISTS agents CASCADE"))
-        db.execute(text("DROP TABLE IF EXISTS incidents CASCADE"))
-        db.commit()
-        print("✅ Old tables dropped")
-    except Exception as e:
-        print(f"⚠️ Drop error: {e}")
-
-    # Create tables with new schema
-    create_tables()
-    print("✅ Tables created with new schema")
-
-    # Seed agents with RANDOM locations around a central point
-    # This simulates agents distributed across the city
+    # Seed agents if none exist
     if db.query(AgentDB).count() == 0:
-        # Central point (you can change this to your city)
+        # Central point (change to your preferred city)
         center_lat = 40.7580  # NYC by default
         center_lon = -73.9855
 
-        # Generate random positions within ~5km radius
         def random_position(center_lat, center_lon, radius_km=5):
-            # Random angle and distance
             angle = random.uniform(0, 2 * math.pi)
             distance = random.uniform(0, radius_km)
-
-            # Convert to lat/lon offset (approximate)
-            lat_offset = (distance / 111) * math.cos(angle)  # 111 km per degree latitude
+            lat_offset = (distance / 111) * math.cos(angle)
             lon_offset = (distance / (111 * math.cos(math.radians(center_lat)))) * math.sin(angle)
-
             return center_lat + lat_offset, center_lon + lon_offset
 
         fire_lat, fire_lon = random_position(center_lat, center_lon)
@@ -70,7 +50,7 @@ async def lifespan(_):
             AgentDB(name="Ambulance Agent", icon="🚑", lat=ambulance_lat, lon=ambulance_lon),
         ])
         db.commit()
-        print(f"✅ Agents seeded at random locations within 5km of center")
+        print("✅ Agents seeded with random locations")
 
     db.close()
     yield
