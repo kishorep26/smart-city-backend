@@ -7,6 +7,7 @@ from sqlalchemy import text
 from datetime import datetime
 import httpx
 import math
+import random
 from contextlib import asynccontextmanager
 import asyncio
 
@@ -40,15 +41,36 @@ async def lifespan(_):
     create_tables()
     print("✅ Tables created with new schema")
 
-    # Seed agents with locations
+    # Seed agents with RANDOM locations around a central point
+    # This simulates agents distributed across the city
     if db.query(AgentDB).count() == 0:
+        # Central point (you can change this to your city)
+        center_lat = 40.7580  # NYC by default
+        center_lon = -73.9855
+
+        # Generate random positions within ~5km radius
+        def random_position(center_lat, center_lon, radius_km=5):
+            # Random angle and distance
+            angle = random.uniform(0, 2 * math.pi)
+            distance = random.uniform(0, radius_km)
+
+            # Convert to lat/lon offset (approximate)
+            lat_offset = (distance / 111) * math.cos(angle)  # 111 km per degree latitude
+            lon_offset = (distance / (111 * math.cos(math.radians(center_lat)))) * math.sin(angle)
+
+            return center_lat + lat_offset, center_lon + lon_offset
+
+        fire_lat, fire_lon = random_position(center_lat, center_lon)
+        police_lat, police_lon = random_position(center_lat, center_lon)
+        ambulance_lat, ambulance_lon = random_position(center_lat, center_lon)
+
         db.add_all([
-            AgentDB(name="Fire Agent", icon="🚒", lat=40.7580, lon=-73.9855),
-            AgentDB(name="Police Agent", icon="🚓", lat=40.7489, lon=-73.9680),
-            AgentDB(name="Ambulance Agent", icon="🚑", lat=40.7614, lon=-73.9776),
+            AgentDB(name="Fire Agent", icon="🚒", lat=fire_lat, lon=fire_lon),
+            AgentDB(name="Police Agent", icon="🚓", lat=police_lat, lon=police_lon),
+            AgentDB(name="Ambulance Agent", icon="🚑", lat=ambulance_lat, lon=ambulance_lon),
         ])
         db.commit()
-        print("✅ Agents seeded with locations")
+        print(f"✅ Agents seeded at random locations within 5km of center")
 
     db.close()
     yield
@@ -176,17 +198,50 @@ def log_event(db, incident_id, agent_id, action, detail):
 
 
 def assign_agent_to_incident(incident_id: int, db: Session):
-    """Automatically assign closest available agent to incident"""
+    """Automatically assign appropriate agent based on incident type and distance"""
     incident = db.query(IncidentDB).filter(IncidentDB.id == incident_id).first()
     agents = db.query(AgentDB).filter(AgentDB.status == "Available").all()
 
     if not incident or not agents:
         return None
 
-    # Find closest agent
+    # Map incident types to preferred agent types
+    incident_type_mapping = {
+        "fire": ["Fire Agent"],
+        "medical": ["Ambulance Agent"],
+        "police": ["Police Agent"],
+        "crime": ["Police Agent"],
+        "accident": ["Ambulance Agent", "Police Agent"],
+        "emergency": ["Ambulance Agent"],
+        "theft": ["Police Agent"],
+        "robbery": ["Police Agent"],
+        "assault": ["Police Agent"],
+        "hazard": ["Fire Agent"],
+    }
+
+    # Get preferred agent types for this incident
+    incident_type_lower = incident.type.lower()
+    preferred_agent_names = []
+
+    for key, agent_types in incident_type_mapping.items():
+        if key in incident_type_lower:
+            preferred_agent_names.extend(agent_types)
+            break
+
+    # If no match, allow any agent
+    if not preferred_agent_names:
+        preferred_agent_names = [a.name for a in agents]
+
+    # Filter agents by type preference
+    preferred_agents = [a for a in agents if a.name in preferred_agent_names]
+
+    # If no preferred agents available, use any available agent
+    candidates = preferred_agents if preferred_agents else agents
+
+    # Find closest agent among candidates
     min_dist = float('inf')
     chosen = None
-    for agent in agents:
+    for agent in candidates:
         dist = haversine(agent.lat or 0, agent.lon or 0, incident.lat, incident.lon)
         if dist < min_dist:
             min_dist = dist
@@ -198,7 +253,7 @@ def assign_agent_to_incident(incident_id: int, db: Session):
     # Assign agent
     chosen.status = "Responding"
     chosen.current_incident = str(incident_id)
-    chosen.decision = f"Assigned to incident {incident_id} at {datetime.now().isoformat()} (distance: {min_dist:.2f}km)"
+    chosen.decision = f"Assigned to {incident.type} incident {incident_id} at {datetime.now().isoformat()} (distance: {min_dist:.2f}km)"
     chosen.response_time = min_dist
     chosen.updated_at = datetime.now()
     chosen.total_responses += 1
