@@ -12,6 +12,7 @@ if not DATABASE_URL:
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+
 def get_session():
     db = SessionLocal()
     try:
@@ -19,24 +20,32 @@ def get_session():
     finally:
         db.close()
 
+
 Base = declarative_base()
+
 
 class IncidentDB(Base):
     __tablename__ = "incidents"
+
     id = Column(Integer, primary_key=True, index=True)
     type = Column(String, index=True)
     lat = Column(Float)
     lon = Column(Float)
     description = Column(String)
     status = Column(String, default="active")
+    assigned_agent_id = Column(Integer, nullable=True, index=True)
     timestamp = Column(DateTime, default=datetime.now, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+
 
 class AgentDB(Base):
     __tablename__ = "agents"
+
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
-    icon = Column(String)
-    status = Column(String, default="Available")
+    type = Column(String, index=True)  # fire, police, medical
+    icon = Column(String, nullable=True)
+    status = Column(String, default="available")  # available, busy
     current_incident = Column(String, nullable=True)
     decision = Column(String, nullable=True)
     response_time = Column(Float, default=0.0)
@@ -47,14 +56,28 @@ class AgentDB(Base):
     lat = Column(Float, default=0.0)
     lon = Column(Float, default=0.0)
 
+
+class StatsDB(Base):
+    __tablename__ = "stats"
+
+    id = Column(Integer, primary_key=True, index=True)
+    total_incidents = Column(Integer, default=0)
+    active_incidents = Column(Integer, default=0)
+    resolved_incidents = Column(Integer, default=0)
+    average_response_time = Column(Float, default=0.0)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class IncidentHistoryDB(Base):
     __tablename__ = "incident_history"
+
     id = Column(Integer, primary_key=True, index=True)
-    incident_id = Column(Integer, index=True)
+    incident_id = Column(Integer, index=True, nullable=True)
     agent_id = Column(Integer, index=True, nullable=True)
-    action = Column(String)
-    detail = Column(String)
+    event_type = Column(String)  # incident_created, incident_resolved, agent_assigned, etc.
+    description = Column(String)
     timestamp = Column(DateTime, default=datetime.now, index=True)
+
 
 def create_tables():
     Base.metadata.create_all(bind=engine)

@@ -9,12 +9,13 @@ import math
 import random
 
 from database import (
-    get_session,
+    SessionLocal,
     IncidentDB,
     AgentDB,
+    StatsDB,
     IncidentHistoryDB,
     create_tables,
-    SessionLocal
+    get_session
 )
 
 # Global flag to track initialization
@@ -28,65 +29,90 @@ def _ensure_initialized():
         return
 
     try:
+        print("Initializing database...")
         create_tables()
         print("✅ Tables created")
 
         db = SessionLocal()
         try:
+            # Seed agents if they don't exist
             if db.query(AgentDB).count() == 0:
-                center_lat = 40.7580
-                center_lon = -73.9855
+                print("Seeding agents...")
+                center_lat, center_lon = 40.7831, -73.9712  # NYC center
 
-                def random_position(center_lat, center_lon, radius_km=5):
-                    angle = random.uniform(0, 2 * math.pi)
-                    distance = random.uniform(0, radius_km)
-                    lat_offset = (distance / 111) * math.cos(angle)
-                    lon_offset = (distance / (111 * math.cos(math.radians(center_lat)))) * math.sin(angle)
-                    return center_lat + lat_offset, center_lon + lon_offset
+                agents_data = [
+                    {"name": "Fire Engine 1", "type": "fire", "icon": "🚒", "status": "available",
+                     "lat": center_lat + random.uniform(-0.02, 0.02),
+                     "lon": center_lon + random.uniform(-0.02, 0.02)},
+                    {"name": "Fire Engine 2", "type": "fire", "icon": "🚒", "status": "available",
+                     "lat": center_lat + random.uniform(-0.02, 0.02),
+                     "lon": center_lon + random.uniform(-0.02, 0.02)},
+                    {"name": "Police Patrol 1", "type": "police", "icon": "🚓", "status": "available",
+                     "lat": center_lat + random.uniform(-0.02, 0.02),
+                     "lon": center_lon + random.uniform(-0.02, 0.02)},
+                    {"name": "Police Patrol 2", "type": "police", "icon": "🚓", "status": "available",
+                     "lat": center_lat + random.uniform(-0.02, 0.02),
+                     "lon": center_lon + random.uniform(-0.02, 0.02)},
+                    {"name": "Ambulance 1", "type": "medical", "icon": "🚑", "status": "available",
+                     "lat": center_lat + random.uniform(-0.02, 0.02),
+                     "lon": center_lon + random.uniform(-0.02, 0.02)},
+                    {"name": "Ambulance 2", "type": "medical", "icon": "🚑", "status": "available",
+                     "lat": center_lat + random.uniform(-0.02, 0.02),
+                     "lon": center_lon + random.uniform(-0.02, 0.02)},
+                ]
 
-                fire_lat, fire_lon = random_position(center_lat, center_lon)
-                police_lat, police_lon = random_position(center_lat, center_lon)
-                ambulance_lat, ambulance_lon = random_position(center_lat, center_lon)
+                for agent_data in agents_data:
+                    db.add(AgentDB(**agent_data))
 
-                db.add_all([
-                    AgentDB(name="Fire Agent", icon="🚒", lat=fire_lat, lon=fire_lon),
-                    AgentDB(name="Police Agent", icon="🚓", lat=police_lat, lon=police_lon),
-                    AgentDB(name="Ambulance Agent", icon="🚑", lat=ambulance_lat, lon=ambulance_lon),
-                ])
                 db.commit()
-                print("✅ Agents seeded")
+                print(f"✅ Seeded {len(agents_data)} agents")
+
+            # Initialize stats if not exists
+            stats = db.query(StatsDB).first()
+            if not stats:
+                stats = StatsDB(
+                    total_incidents=0,
+                    active_incidents=0,
+                    resolved_incidents=0,
+                    average_response_time=0.0
+                )
+                db.add(stats)
+                db.commit()
+                print("✅ Stats initialized")
+
         finally:
             db.close()
 
         _initialized = True
+        print("✅ Database initialization complete!")
+
     except Exception as e:
-        print(f"⚠️ Init error: {e}")
+        print(f"⚠️ Initialization error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
-def create_app():
-    """Factory function to create FastAPI app"""
-    app = FastAPI(title="Smart City AI Backend")
+# Create FastAPI app
+app = FastAPI(title="Smart City Emergency Response API")
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    @app.on_event("startup")
-    async def startup_event():
-        _ensure_initialized()
-
-    return app
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-# Create app instance
-app = create_app()
+@app.on_event("startup")
+async def startup_event():
+    """Initialize on startup"""
+    _ensure_initialized()
 
 
-# --- Models ---
+# --- Pydantic Models ---
+
 class IncidentLoc(BaseModel):
     lat: float
     lon: float
@@ -99,14 +125,22 @@ class IncidentIn(BaseModel):
     status: Optional[str] = "active"
 
 
-class IncidentOut(IncidentIn):
+class IncidentOut(BaseModel):
     id: int
+    type: str
+    location: IncidentLoc
+    description: str
+    status: str
     timestamp: datetime
+
+    class Config:
+        from_attributes = True
 
 
 class AgentOut(BaseModel):
     id: int
     name: str
+    type: str
     icon: str
     status: str
     current_incident: Optional[str] = None
@@ -115,175 +149,105 @@ class AgentOut(BaseModel):
     efficiency: float
     total_responses: int
     successful_responses: int
-    updated_at: Optional[datetime]
+    updated_at: Optional[datetime] = None
     lat: float
     lon: float
+
+    class Config:
+        from_attributes = True
 
 
 class StatsOut(BaseModel):
     total_incidents: int
     active_incidents: int
     resolved_incidents: int
-    total_agents: int
-    active_agents: int
     average_response_time: float
-    average_efficiency: float
+
+    class Config:
+        from_attributes = True
 
 
 class IncidentHistoryOut(BaseModel):
     id: int
-    incident_id: int
-    agent_id: Optional[int]
-    action: str
-    detail: str
+    incident_id: Optional[int] = None
+    agent_id: Optional[int] = None
+    event_type: str
+    description: str
     timestamp: datetime
 
-
-# --- Helper functions ---
-def to_incident_out(row) -> IncidentOut:
-    return IncidentOut(
-        id=int(row.id),
-        type=str(row.type or ""),
-        location=IncidentLoc(lat=float(row.lat or 0), lon=float(row.lon or 0)),
-        description=str(row.description or ""),
-        status=str(row.status or ""),
-        timestamp=row.timestamp or datetime.now()
-    )
+    class Config:
+        from_attributes = True
 
 
-def to_agent_out(row) -> AgentOut:
-    return AgentOut(
-        id=int(row.id),
-        name=str(row.name or ""),
-        icon=str(row.icon or ""),
-        status=str(row.status or ""),
-        current_incident=(str(row.current_incident) if row.current_incident is not None else None),
-        decision=(str(row.decision) if row.decision is not None else None),
-        response_time=float(row.response_time or 0),
-        efficiency=float(row.efficiency or 0),
-        total_responses=int(row.total_responses or 0),
-        successful_responses=int(row.successful_responses or 0),
-        updated_at=row.updated_at,
-        lat=float(row.lat or 0),
-        lon=float(row.lon or 0)
-    )
+# --- Helper Functions ---
 
+def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate distance between two points using Haversine formula"""
+    R = 6371  # Earth's radius in kilometers
 
-def to_history_out(row) -> IncidentHistoryOut:
-    return IncidentHistoryOut(
-        id=int(row.id),
-        incident_id=int(row.incident_id),
-        agent_id=int(row.agent_id) if row.agent_id is not None else None,
-        action=str(row.action or ""),
-        detail=str(row.detail or ""),
-        timestamp=row.timestamp
-    )
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    delta_lat = math.radians(lat2 - lat1)
+    delta_lon = math.radians(lon2 - lon1)
 
-
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    a = math.sin(delta_lat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon / 2) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
     return R * c
 
 
-def log_event(db, incident_id, agent_id, action, detail):
-    event = IncidentHistoryDB(
-        incident_id=incident_id, agent_id=agent_id,
-        action=action, detail=detail, timestamp=datetime.now()
+# Incident type to agent type mapping
+incident_type_mapping = {
+    "fire": "fire",
+    "medical": "medical",
+    "crime": "police",
+    "accident": "police",
+    "theft": "police",
+    "robbery": "police",
+    "assault": "police",
+    "emergency": "medical",
+    "hazard": "fire",
+    "other": "police"
+}
+
+
+def to_incident_out(incident: IncidentDB) -> IncidentOut:
+    """Convert IncidentDB to IncidentOut"""
+    return IncidentOut(
+        id=incident.id,
+        type=incident.type,
+        location=IncidentLoc(lat=incident.lat, lon=incident.lon),
+        description=incident.description,
+        status=incident.status,
+        timestamp=incident.created_at or incident.timestamp
     )
-    db.add(event)
-    db.commit()
 
 
-def assign_agent_to_incident(incident_id: int, db: Session):
-    """Automatically assign appropriate agent based on incident type and distance"""
-    incident = db.query(IncidentDB).filter(IncidentDB.id == incident_id).first()
-    agents = db.query(AgentDB).filter(AgentDB.status == "Available").all()
-
-    if not incident or not agents:
-        return None
-
-    incident_type_mapping = {
-        "fire": ["Fire Agent"],
-        "medical": ["Ambulance Agent"],
-        "police": ["Police Agent"],
-        "crime": ["Police Agent"],
-        "accident": ["Ambulance Agent", "Police Agent"],
-        "emergency": ["Ambulance Agent"],
-        "theft": ["Police Agent"],
-        "robbery": ["Police Agent"],
-        "assault": ["Police Agent"],
-        "hazard": ["Fire Agent"],
-    }
-
-    incident_type_lower = incident.type.lower()
-    preferred_agent_names = []
-
-    for key, agent_types in incident_type_mapping.items():
-        if key in incident_type_lower:
-            preferred_agent_names.extend(agent_types)
-            break
-
-    if not preferred_agent_names:
-        preferred_agent_names = [a.name for a in agents]
-
-    preferred_agents = [a for a in agents if a.name in preferred_agent_names]
-    candidates = preferred_agents if preferred_agents else agents
-
-    min_dist = float('inf')
-    chosen = None
-    for agent in candidates:
-        dist = haversine(agent.lat or 0, agent.lon or 0, incident.lat, incident.lon)
-        if dist < min_dist:
-            min_dist = dist
-            chosen = agent
-
-    if chosen is None:
-        return None
-
-    chosen.status = "Responding"
-    chosen.current_incident = str(incident_id)
-    chosen.decision = f"Assigned to {incident.type} incident {incident_id} at {datetime.now().isoformat()} (distance: {min_dist:.2f}km)"
-    chosen.response_time = min_dist
-    chosen.updated_at = datetime.now()
-    chosen.total_responses += 1
-
-    db.commit()
-    log_event(db, incident_id, chosen.id, "ASSIGN", chosen.decision)
-
-    return chosen
+def to_agent_out(agent: AgentDB) -> AgentOut:
+    """Convert AgentDB to AgentOut"""
+    return AgentOut(
+        id=agent.id,
+        name=agent.name,
+        type=agent.type,
+        icon=agent.icon or "",
+        status=agent.status,
+        current_incident=agent.current_incident,
+        decision=agent.decision,
+        response_time=agent.response_time,
+        efficiency=agent.efficiency,
+        total_responses=agent.total_responses,
+        successful_responses=agent.successful_responses,
+        updated_at=agent.updated_at,
+        lat=agent.lat,
+        lon=agent.lon
+    )
 
 
-# --- REST Endpoints ---
-
-@app.post("/classify-incident")
-def classify_incident(data: dict):
-    desc = data.get("desc", "")
-    label = "police" if "theft" in desc.lower() else "fire" if "fire" in desc.lower() else "medical"
-    return {"category": label, "confidence": 0.95}
-
-
-@app.get("/search-address")
-def search_address(query: str = Query(..., min_length=3)):
-    url = "https://nominatim.openstreetmap.org/search"
-    params = {"q": query, "format": "json", "limit": 5}
-    resp = httpx.get(url, params=params, headers={"User-Agent": "smart-city-backend"})
-    resp.raise_for_status()
-    data = resp.json()
-    results = [{
-        "lat": float(item.get("lat", 0)),
-        "lon": float(item.get("lon", 0)),
-        "address": str(item.get("display_name", ""))
-    } for item in data]
-    return results
-
+# --- API Routes ---
 
 @app.get("/")
 def root():
-    return {"message": "Backend running", "status": "online"}
+    return {"message": "Smart City Emergency Response API", "status": "online"}
 
 
 @app.get("/health")
@@ -291,91 +255,195 @@ def health():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 
+@app.get("/agents", response_model=List[AgentOut])
+def get_agents(db: Session = Depends(get_session)):
+    """Get all agents"""
+    agents = db.query(AgentDB).all()
+    return [to_agent_out(agent) for agent in agents]
+
+
 @app.get("/incidents", response_model=List[IncidentOut])
 def get_incidents(db: Session = Depends(get_session)):
-    return [to_incident_out(row) for row in db.query(IncidentDB).all()]
+    """Get all incidents"""
+    incidents = db.query(IncidentDB).all()
+    return [to_incident_out(incident) for incident in incidents]
 
 
 @app.post("/incidents", response_model=IncidentOut)
 def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
-    new_incident = IncidentDB(
-        type=incident.type,
-        lat=incident.location.lat,
-        lon=incident.location.lon,
-        description=incident.description,
-        status=incident.status,
-        timestamp=datetime.now()
-    )
-    db.add(new_incident)
-    db.commit()
-    db.refresh(new_incident)
-    log_event(db, new_incident.id, None, "CREATE_INCIDENT", f"New incident created: {new_incident.description}")
-
+    """Create a new incident and auto-assign agent"""
     try:
-        assign_agent_to_incident(new_incident.id, db)
-    except Exception as e:
-        print(f"Failed to assign agent: {e}")
+        # Create new incident
+        new_incident = IncidentDB(
+            type=incident.type,
+            description=incident.description,
+            status="active",
+            lat=incident.location.lat,
+            lon=incident.location.lon,
+            timestamp=datetime.now(),
+            created_at=datetime.now()
+        )
+        db.add(new_incident)
+        db.flush()
 
-    return to_incident_out(new_incident)
+        # Get preferred agent type for this incident
+        preferred_type = incident_type_mapping.get(incident.type.lower(), "police")
+
+        # Find nearest available agent of preferred type
+        available_agents = db.query(AgentDB).filter(
+            AgentDB.status == "available",
+            AgentDB.type == preferred_type
+        ).all()
+
+        # If no preferred type available, get any available agent
+        if not available_agents:
+            available_agents = db.query(AgentDB).filter(
+                AgentDB.status == "available"
+            ).all()
+
+        if available_agents:
+            # Calculate distances and find nearest
+            nearest_agent = min(
+                available_agents,
+                key=lambda a: calculate_distance(
+                    incident.location.lat, incident.location.lon, a.lat, a.lon
+                )
+            )
+
+            distance = calculate_distance(
+                incident.location.lat, incident.location.lon,
+                nearest_agent.lat, nearest_agent.lon
+            )
+
+            # Assign agent
+            new_incident.assigned_agent_id = nearest_agent.id
+            nearest_agent.status = "busy"
+            nearest_agent.current_incident = str(new_incident.id)
+            nearest_agent.decision = f"Responding to {incident.type} incident"
+            nearest_agent.response_time = distance * 2  # Estimate: 2 min per km
+            nearest_agent.total_responses += 1
+            nearest_agent.updated_at = datetime.now()
+
+            # Log assignment
+            history = IncidentHistoryDB(
+                incident_id=new_incident.id,
+                agent_id=nearest_agent.id,
+                event_type="incident_created",
+                description=f"Incident created and assigned to {nearest_agent.name} ({distance:.2f}km away)"
+            )
+            db.add(history)
+
+        # Update stats
+        stats = db.query(StatsDB).first()
+        if stats:
+            stats.total_incidents += 1
+            stats.active_incidents += 1
+
+        db.commit()
+        db.refresh(new_incident)
+        return to_incident_out(new_incident)
+
+    except Exception as e:
+        db.rollback()
+        print(f"Error creating incident: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.put("/incidents/{incident_id}/resolve", response_model=IncidentOut)
 def resolve_incident(incident_id: int, db: Session = Depends(get_session)):
+    """Mark incident as resolved and free up agent"""
     incident = db.query(IncidentDB).filter(IncidentDB.id == incident_id).first()
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
+
     incident.status = "resolved"
-    agent = db.query(AgentDB).filter(AgentDB.current_incident == str(incident_id),
-                                     AgentDB.status == "Responding").first()
-    if agent:
-        agent.status = "Available"
-        agent.current_incident = None
-        agent.decision = f"Incident {incident_id} resolved at {datetime.now().isoformat()}"
-        agent.successful_responses += 1
-        agent.updated_at = datetime.now()
-        db.commit()
-        log_event(db, incident_id, agent.id, "RESOLVE", f"Incident resolved and agent {agent.name} released")
+
+    # Free up assigned agent
+    if incident.assigned_agent_id:
+        agent = db.query(AgentDB).filter(AgentDB.id == incident.assigned_agent_id).first()
+        if agent:
+            agent.status = "available"
+            agent.current_incident = None
+            agent.decision = "Available for assignment"
+            agent.successful_responses += 1
+            agent.updated_at = datetime.now()
+
+            # Log resolution
+            history = IncidentHistoryDB(
+                incident_id=incident_id,
+                agent_id=agent.id,
+                event_type="incident_resolved",
+                description=f"Incident resolved by {agent.name}"
+            )
+            db.add(history)
+
+    # Update stats
+    stats = db.query(StatsDB).first()
+    if stats:
+        stats.active_incidents = max(0, stats.active_incidents - 1)
+        stats.resolved_incidents += 1
+
     db.commit()
     db.refresh(incident)
     return to_incident_out(incident)
 
 
-@app.post("/assign-agent", response_model=AgentOut)
-def assign_agent(incident_id: int, db: Session = Depends(get_session)):
-    result = assign_agent_to_incident(incident_id, db)
-    if not result:
-        raise HTTPException(404, "No available agent or incident not found")
-    return to_agent_out(result)
-
-
-@app.get("/agents", response_model=List[AgentOut])
-def get_agents(db: Session = Depends(get_session)):
-    return [to_agent_out(row) for row in db.query(AgentDB).all()]
-
-
 @app.get("/stats", response_model=StatsOut)
 def get_stats(db: Session = Depends(get_session)):
-    incs = db.query(IncidentDB).all()
-    agents = db.query(AgentDB).all()
-    total = len(incs)
-    active = len([i for i in incs if str(getattr(i, "status", "")).lower() == "active"])
-    resolved = len([i for i in incs if str(getattr(i, "status", "")).lower() == "resolved"])
-    t_agents = len(agents)
-    a_agents = len([a for a in agents if str(getattr(a, "status", "")).lower() in ("responding", "active", "busy")])
-    avg_resp = sum([float(getattr(a, "response_time", 0)) for a in agents]) / t_agents if t_agents else 0.0
-    avg_eff = sum([float(getattr(a, "efficiency", 0)) for a in agents]) / t_agents if t_agents else 0.0
-    return StatsOut(
-        total_incidents=total,
-        active_incidents=active,
-        resolved_incidents=resolved,
-        total_agents=t_agents,
-        active_agents=a_agents,
-        average_response_time=avg_resp,
-        average_efficiency=avg_eff
-    )
+    """Get system statistics"""
+    stats = db.query(StatsDB).first()
+    if not stats:
+        # Return default stats if none exist
+        return StatsOut(
+            total_incidents=0,
+            active_incidents=0,
+            resolved_incidents=0,
+            average_response_time=0.0
+        )
+    return stats
 
 
 @app.get("/incident-history", response_model=List[IncidentHistoryOut])
-def incident_history(db: Session = Depends(get_session)):
-    return [to_history_out(row) for row in
-            db.query(IncidentHistoryDB).order_by(IncidentHistoryDB.timestamp.desc()).limit(100).all()]
+def get_incident_history(db: Session = Depends(get_session)):
+    """Get incident history logs"""
+    history = db.query(IncidentHistoryDB).order_by(
+        IncidentHistoryDB.timestamp.desc()
+    ).limit(50).all()
+    return history
+
+
+@app.get("/search-address")
+def search_address(query: str = Query(..., min_length=3)):
+    """Search for addresses using OpenStreetMap Nominatim"""
+    try:
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {"q": query, "format": "json", "limit": 5}
+        resp = httpx.get(url, params=params, headers={"User-Agent": "smart-city-backend"})
+        resp.raise_for_status()
+        data = resp.json()
+
+        results = [{
+            "lat": float(item.get("lat", 0)),
+            "lon": float(item.get("lon", 0)),
+            "address": str(item.get("display_name", ""))
+        } for item in data]
+
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Address search failed: {str(e)}")
+
+
+@app.post("/classify-incident")
+def classify_incident(data: dict):
+    """Simple incident classification based on keywords"""
+    desc = data.get("desc", "").lower()
+
+    # Simple keyword-based classification
+    if any(word in desc for word in ["fire", "smoke", "burning", "flames"]):
+        return {"category": "fire", "confidence": 0.95}
+    elif any(word in desc for word in ["medical", "injury", "accident", "ambulance", "emergency"]):
+        return {"category": "medical", "confidence": 0.92}
+    elif any(word in desc for word in ["theft", "robbery", "crime", "police", "assault", "break"]):
+        return {"category": "crime", "confidence": 0.90}
+    else:
+        return {"category": "other", "confidence": 0.75}
