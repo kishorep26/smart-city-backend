@@ -1,5 +1,4 @@
-from mangum import Mangum
 from main import app
+from mangum import Mangum
 
-# Wrap the FastAPI app with Mangum for serverless
 handler = Mangum(app, lifespan="off")
