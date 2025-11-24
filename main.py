@@ -24,13 +24,12 @@ from database import (
 # --- Lifespan/Seeding ---
 @asynccontextmanager
 async def lifespan(_):
-    create_tables()  # Only create if not exists
+    create_tables()  # Only create if not exists (no dropping)
     db = next(get_session())
 
     # Seed agents if none exist
     if db.query(AgentDB).count() == 0:
-        # Central point (change to your preferred city)
-        center_lat = 40.7580  # NYC by default
+        center_lat = 40.7580
         center_lon = -73.9855
 
         def random_position(center_lat, center_lon, radius_km=5):
@@ -50,7 +49,7 @@ async def lifespan(_):
             AgentDB(name="Ambulance Agent", icon="🚑", lat=ambulance_lat, lon=ambulance_lon),
         ])
         db.commit()
-        print("✅ Agents seeded with random locations")
+        print("✅ Agents seeded")
 
     db.close()
     yield
