@@ -17,52 +17,73 @@ from database import (
     SessionLocal
 )
 
-# Initialize database at module load time (simple approach for serverless)
-try:
-    create_tables()
-    print("✅ Tables created")
-
-    # Seed agents if needed
-    db = SessionLocal()
-    if db.query(AgentDB).count() == 0:
-        center_lat = 40.7580
-        center_lon = -73.9855
+# Global flag to track initialization
+_initialized = False
 
 
-        def random_position(center_lat, center_lon, radius_km=5):
-            angle = random.uniform(0, 2 * math.pi)
-            distance = random.uniform(0, radius_km)
-            lat_offset = (distance / 111) * math.cos(angle)
-            lon_offset = (distance / (111 * math.cos(math.radians(center_lat)))) * math.sin(angle)
-            return center_lat + lat_offset, center_lon + lon_offset
+def _ensure_initialized():
+    """Lazy initialization - only runs on first request"""
+    global _initialized
+    if _initialized:
+        return
+
+    try:
+        create_tables()
+        print("✅ Tables created")
+
+        db = SessionLocal()
+        try:
+            if db.query(AgentDB).count() == 0:
+                center_lat = 40.7580
+                center_lon = -73.9855
+
+                def random_position(center_lat, center_lon, radius_km=5):
+                    angle = random.uniform(0, 2 * math.pi)
+                    distance = random.uniform(0, radius_km)
+                    lat_offset = (distance / 111) * math.cos(angle)
+                    lon_offset = (distance / (111 * math.cos(math.radians(center_lat)))) * math.sin(angle)
+                    return center_lat + lat_offset, center_lon + lon_offset
+
+                fire_lat, fire_lon = random_position(center_lat, center_lon)
+                police_lat, police_lon = random_position(center_lat, center_lon)
+                ambulance_lat, ambulance_lon = random_position(center_lat, center_lon)
+
+                db.add_all([
+                    AgentDB(name="Fire Agent", icon="🚒", lat=fire_lat, lon=fire_lon),
+                    AgentDB(name="Police Agent", icon="🚓", lat=police_lat, lon=police_lon),
+                    AgentDB(name="Ambulance Agent", icon="🚑", lat=ambulance_lat, lon=ambulance_lon),
+                ])
+                db.commit()
+                print("✅ Agents seeded")
+        finally:
+            db.close()
+
+        _initialized = True
+    except Exception as e:
+        print(f"⚠️ Init error: {e}")
 
 
-        fire_lat, fire_lon = random_position(center_lat, center_lon)
-        police_lat, police_lon = random_position(center_lat, center_lon)
-        ambulance_lat, ambulance_lon = random_position(center_lat, center_lon)
+def create_app():
+    """Factory function to create FastAPI app"""
+    app = FastAPI(title="Smart City AI Backend")
 
-        db.add_all([
-            AgentDB(name="Fire Agent", icon="🚒", lat=fire_lat, lon=fire_lon),
-            AgentDB(name="Police Agent", icon="🚓", lat=police_lat, lon=police_lon),
-            AgentDB(name="Ambulance Agent", icon="🚑", lat=ambulance_lat, lon=ambulance_lon),
-        ])
-        db.commit()
-        print("✅ Agents seeded")
-    db.close()
-except Exception as e:
-    print(f"⚠️ Init error: {e}")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-# Create FastAPI app
-app = FastAPI(title="Smart City AI Backend")
+    @app.on_event("startup")
+    async def startup_event():
+        _ensure_initialized()
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    return app
+
+
+# Create app instance
+app = create_app()
 
 
 # --- Models ---
