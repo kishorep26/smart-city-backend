@@ -17,27 +17,22 @@ from database import (
     SessionLocal
 )
 
+# Global flag to track initialization
+_initialized = False
 
-# --- Create app WITHOUT lifespan (not compatible with Vercel serverless) ---
-def create_app():
-    app = FastAPI(title="Smart City AI Backend")
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    # Initialize database on app creation
-    try:
-        create_tables()
-        _seed_agents_if_needed()
-    except Exception as e:
-        print(f"⚠️ Initialization warning: {e}")
-
-    return app
+def _lazy_init():
+    """Initialize database only when first request comes in"""
+    global _initialized
+    if not _initialized:
+        try:
+            create_tables()
+            _seed_agents_if_needed()
+            _initialized = True
+            print("✅ Database initialized successfully")
+        except Exception as e:
+            print(f"⚠️ Initialization error: {e}")
+            # Don't raise - let the app start anyway
 
 
 def _seed_agents_if_needed():
@@ -71,8 +66,25 @@ def _seed_agents_if_needed():
         print(f"⚠️ Seeding error: {e}")
 
 
-# Create app instance
-app = create_app()
+# Create FastAPI app
+app = FastAPI(title="Smart City AI Backend")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Middleware to initialize database on first request
+@app.middleware("http")
+async def init_middleware(request, call_next):
+    _lazy_init()
+    response = await call_next(request)
+    return response
 
 
 # --- Models ---
@@ -322,9 +334,6 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
     except Exception as e:
         print(f"❌ Failed to assign agent: {e}")
 
-    # Note: BackgroundTasks removed - not reliable in serverless
-    # Auto-resolve can be implemented with Vercel Cron Jobs if needed
-
     return to_incident_out(new_incident)
 
 
@@ -386,8 +395,4 @@ def get_stats(db: Session = Depends(get_session)):
 
 @app.get("/incident-history", response_model=List[IncidentHistoryOut])
 def incident_history(db: Session = Depends(get_session)):
-    return [to_history_out(row) for row in
-            db.query(IncidentHistoryDB).order_by(IncidentHistoryDB.timestamp.desc()).limit(100).all()]
-
-# Note: WebSocket removed - not supported in Vercel serverless
-# If you need real-time
+    return [to_history_out(row) for row in db.query(IncidentHistoryDB).order_]

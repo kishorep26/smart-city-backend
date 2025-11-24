@@ -1,15 +1,16 @@
-from mangum import Mangum
 import sys
 import os
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-# Import app WITHOUT lifespan
-from main import create_app
+# Import just the app, don't execute anything
+try:
+    from main import app
+    from mangum import Mangum
 
-# Create app instance
-app = create_app()
-
-# Wrap with Mangum (disable lifespan)
-handler = Mangum(app, lifespan="off")
+    # Wrap with Mangum for serverless
+    handler = Mangum(app, lifespan="off")
+except Exception as e:
+    print(f"Error loading app: {e}")
+    raise
