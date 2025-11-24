@@ -1,15 +1,12 @@
-from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, Query
 from starlette.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import text
 from datetime import datetime
 import httpx
 import math
 import random
-from contextlib import asynccontextmanager
-import asyncio
 
 from database import (
     get_session,
@@ -21,47 +18,61 @@ from database import (
 )
 
 
-# --- Lifespan/Seeding ---
-@asynccontextmanager
-async def lifespan(_):
-    create_tables()  # Only create if not exists (no dropping)
-    db = next(get_session())
+# --- Create app WITHOUT lifespan (not compatible with Vercel serverless) ---
+def create_app():
+    app = FastAPI(title="Smart City AI Backend")
 
-    # Seed agents if none exist
-    if db.query(AgentDB).count() == 0:
-        center_lat = 40.7580
-        center_lon = -73.9855
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-        def random_position(center_lat, center_lon, radius_km=5):
-            angle = random.uniform(0, 2 * math.pi)
-            distance = random.uniform(0, radius_km)
-            lat_offset = (distance / 111) * math.cos(angle)
-            lon_offset = (distance / (111 * math.cos(math.radians(center_lat)))) * math.sin(angle)
-            return center_lat + lat_offset, center_lon + lon_offset
+    # Initialize database on app creation
+    try:
+        create_tables()
+        _seed_agents_if_needed()
+    except Exception as e:
+        print(f"⚠️ Initialization warning: {e}")
 
-        fire_lat, fire_lon = random_position(center_lat, center_lon)
-        police_lat, police_lon = random_position(center_lat, center_lon)
-        ambulance_lat, ambulance_lon = random_position(center_lat, center_lon)
-
-        db.add_all([
-            AgentDB(name="Fire Agent", icon="🚒", lat=fire_lat, lon=fire_lon),
-            AgentDB(name="Police Agent", icon="🚓", lat=police_lat, lon=police_lon),
-            AgentDB(name="Ambulance Agent", icon="🚑", lat=ambulance_lat, lon=ambulance_lon),
-        ])
-        db.commit()
-        print("✅ Agents seeded")
-
-    db.close()
-    yield
+    return app
 
 
-app = FastAPI(title="Smart City AI Backend", lifespan=lifespan)
-app.add_middleware(CORSMiddleware,
-                   allow_origins=["*"],
-                   allow_credentials=True,
-                   allow_methods=["*"],
-                   allow_headers=["*"],
-                   )
+def _seed_agents_if_needed():
+    """Seed agents if database is empty"""
+    try:
+        db = SessionLocal()
+        if db.query(AgentDB).count() == 0:
+            center_lat = 40.7580
+            center_lon = -73.9855
+
+            def random_position(center_lat, center_lon, radius_km=5):
+                angle = random.uniform(0, 2 * math.pi)
+                distance = random.uniform(0, radius_km)
+                lat_offset = (distance / 111) * math.cos(angle)
+                lon_offset = (distance / (111 * math.cos(math.radians(center_lat)))) * math.sin(angle)
+                return center_lat + lat_offset, center_lon + lon_offset
+
+            fire_lat, fire_lon = random_position(center_lat, center_lon)
+            police_lat, police_lon = random_position(center_lat, center_lon)
+            ambulance_lat, ambulance_lon = random_position(center_lat, center_lon)
+
+            db.add_all([
+                AgentDB(name="Fire Agent", icon="🚒", lat=fire_lat, lon=fire_lon),
+                AgentDB(name="Police Agent", icon="🚓", lat=police_lat, lon=police_lon),
+                AgentDB(name="Ambulance Agent", icon="🚑", lat=ambulance_lat, lon=ambulance_lon),
+            ])
+            db.commit()
+            print("✅ Agents seeded with random locations")
+        db.close()
+    except Exception as e:
+        print(f"⚠️ Seeding error: {e}")
+
+
+# Create app instance
+app = create_app()
 
 
 # --- Models ---
@@ -94,8 +105,8 @@ class AgentOut(BaseModel):
     total_responses: int
     successful_responses: int
     updated_at: Optional[datetime]
-    lat: float  # ← ADD THIS
-    lon: float  # ← ADD THIS
+    lat: float
+    lon: float
 
 
 class StatsOut(BaseModel):
@@ -142,8 +153,8 @@ def to_agent_out(row) -> AgentOut:
         total_responses=int(row.total_responses or 0),
         successful_responses=int(row.successful_responses or 0),
         updated_at=row.updated_at,
-        lat=float(row.lat or 0),  # ← ADD THIS
-        lon=float(row.lon or 0)  # ← ADD THIS
+        lat=float(row.lat or 0),
+        lon=float(row.lon or 0)
     )
 
 
@@ -287,7 +298,7 @@ def get_incidents(db: Session = Depends(get_session)):
 
 
 @app.post("/incidents", response_model=IncidentOut)
-def create_incident(incident: IncidentIn, background_tasks: BackgroundTasks, db: Session = Depends(get_session)):
+def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
     new_incident = IncidentDB(
         type=incident.type,
         lat=incident.location.lat,
@@ -301,7 +312,7 @@ def create_incident(incident: IncidentIn, background_tasks: BackgroundTasks, db:
     db.refresh(new_incident)
     log_event(db, new_incident.id, None, "CREATE_INCIDENT", f"New incident created: {new_incident.description}")
 
-    # Auto-assign agent immediately after incident creation
+    # Auto-assign agent immediately
     try:
         assigned_agent = assign_agent_to_incident(new_incident.id, db)
         if assigned_agent:
@@ -311,21 +322,10 @@ def create_incident(incident: IncidentIn, background_tasks: BackgroundTasks, db:
     except Exception as e:
         print(f"❌ Failed to assign agent: {e}")
 
-    # Background auto-resolve (10min)
-    background_tasks.add_task(auto_resolve_incident, new_incident.id)
+    # Note: BackgroundTasks removed - not reliable in serverless
+    # Auto-resolve can be implemented with Vercel Cron Jobs if needed
+
     return to_incident_out(new_incident)
-
-
-def auto_resolve_incident(incident_id):
-    import time
-    time.sleep(600)  # 10 minutes
-    db = SessionLocal()
-    incident = db.query(IncidentDB).filter(IncidentDB.id == incident_id).first()
-    if incident and incident.status == "active":
-        incident.status = "auto-resolved"
-        db.commit()
-        log_event(db, incident.id, None, "AUTO_RESOLVE", "Incident auto-resolved after 10min")
-    db.close()
 
 
 @app.put("/incidents/{incident_id}/resolve", response_model=IncidentOut)
@@ -351,29 +351,10 @@ def resolve_incident(incident_id: int, db: Session = Depends(get_session)):
 
 @app.post("/assign-agent", response_model=AgentOut)
 def assign_agent(incident_id: int, db: Session = Depends(get_session)):
-    incident = db.query(IncidentDB).filter(IncidentDB.id == incident_id).first()
-    agents = db.query(AgentDB).filter(AgentDB.status == "Available").all()
-    if not incident or not agents:
+    result = assign_agent_to_incident(incident_id, db)
+    if not result:
         raise HTTPException(404, "No available agent or incident not found")
-    # Find closest agent
-    min_dist = float('inf')
-    chosen = None
-    for a in agents:
-        dist = haversine(a.lat or 0, a.lon or 0, incident.lat, incident.lon)
-        if dist < min_dist:
-            min_dist = dist
-            chosen = a
-    if chosen is None:
-        raise HTTPException(404, "No available agent")
-    chosen.status = "Responding"
-    chosen.current_incident = str(incident_id)
-    chosen.decision = f"Assigned to incident {incident_id} at {datetime.now().isoformat()} (distance: {min_dist:.2f}km)"
-    chosen.response_time = min_dist
-    chosen.updated_at = datetime.now()
-    chosen.total_responses += 1
-    db.commit()
-    log_event(db, incident_id, chosen.id, "ASSIGN", chosen.decision)
-    return to_agent_out(chosen)
+    return to_agent_out(result)
 
 
 @app.get("/agents", response_model=List[AgentOut])
@@ -408,22 +389,5 @@ def incident_history(db: Session = Depends(get_session)):
     return [to_history_out(row) for row in
             db.query(IncidentHistoryDB).order_by(IncidentHistoryDB.timestamp.desc()).limit(100).all()]
 
-
-# --- Real-Time: WebSocket Echo for demo ---
-@app.websocket("/ws/updates")
-async def ws_updates(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            await asyncio.sleep(1)
-            db = SessionLocal()
-            current_agents = db.query(AgentDB).count()
-            await websocket.send_json({"time": datetime.now().isoformat(), "agents": current_agents})
-            db.close()
-    except WebSocketDisconnect:
-        pass
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# Note: WebSocket removed - not supported in Vercel serverless
+# If you need real-time
