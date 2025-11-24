@@ -3,17 +3,14 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
 from sqlalchemy.orm import sessionmaker, declarative_base
 from datetime import datetime
 
-# Get DATABASE_URL from environment (will be set in Vercel)
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable is required")
 
-# Fix for Supabase: Replace postgres:// with postgresql://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Add SSL requirement for Supabase
 if "sslmode" not in DATABASE_URL and "supabase" in DATABASE_URL.lower():
     separator = "&" if "?" in DATABASE_URL else "?"
     DATABASE_URL = f"{DATABASE_URL}{separator}sslmode=require"
@@ -52,9 +49,9 @@ class AgentDB(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
-    type = Column(String, index=True)  # fire, police, medical
+    type = Column(String, index=True)
     icon = Column(String, nullable=True)
-    status = Column(String, default="available")  # available, busy
+    status = Column(String, default="available")
     current_incident = Column(String, nullable=True)
     decision = Column(String, nullable=True)
     response_time = Column(Float, default=0.0)
@@ -83,7 +80,7 @@ class IncidentHistoryDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     incident_id = Column(Integer, index=True, nullable=True)
     agent_id = Column(Integer, index=True, nullable=True)
-    event_type = Column(String)  # incident_created, incident_resolved, agent_assigned, etc.
+    event_type = Column(String)
     description = Column(String)
     timestamp = Column(DateTime, default=datetime.now, index=True)
 
