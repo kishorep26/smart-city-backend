@@ -17,54 +17,40 @@ from database import (
     SessionLocal
 )
 
-# Global flag to track initialization
-_initialized = False
+# Initialize database at module load time (simple approach for serverless)
+try:
+    create_tables()
+    print("✅ Tables created")
+
+    # Seed agents if needed
+    db = SessionLocal()
+    if db.query(AgentDB).count() == 0:
+        center_lat = 40.7580
+        center_lon = -73.9855
 
 
-def _lazy_init():
-    """Initialize database only when first request comes in"""
-    global _initialized
-    if not _initialized:
-        try:
-            create_tables()
-            _seed_agents_if_needed()
-            _initialized = True
-            print("✅ Database initialized successfully")
-        except Exception as e:
-            print(f"⚠️ Initialization error: {e}")
-            # Don't raise - let the app start anyway
+        def random_position(center_lat, center_lon, radius_km=5):
+            angle = random.uniform(0, 2 * math.pi)
+            distance = random.uniform(0, radius_km)
+            lat_offset = (distance / 111) * math.cos(angle)
+            lon_offset = (distance / (111 * math.cos(math.radians(center_lat)))) * math.sin(angle)
+            return center_lat + lat_offset, center_lon + lon_offset
 
 
-def _seed_agents_if_needed():
-    """Seed agents if database is empty"""
-    try:
-        db = SessionLocal()
-        if db.query(AgentDB).count() == 0:
-            center_lat = 40.7580
-            center_lon = -73.9855
+        fire_lat, fire_lon = random_position(center_lat, center_lon)
+        police_lat, police_lon = random_position(center_lat, center_lon)
+        ambulance_lat, ambulance_lon = random_position(center_lat, center_lon)
 
-            def random_position(center_lat, center_lon, radius_km=5):
-                angle = random.uniform(0, 2 * math.pi)
-                distance = random.uniform(0, radius_km)
-                lat_offset = (distance / 111) * math.cos(angle)
-                lon_offset = (distance / (111 * math.cos(math.radians(center_lat)))) * math.sin(angle)
-                return center_lat + lat_offset, center_lon + lon_offset
-
-            fire_lat, fire_lon = random_position(center_lat, center_lon)
-            police_lat, police_lon = random_position(center_lat, center_lon)
-            ambulance_lat, ambulance_lon = random_position(center_lat, center_lon)
-
-            db.add_all([
-                AgentDB(name="Fire Agent", icon="🚒", lat=fire_lat, lon=fire_lon),
-                AgentDB(name="Police Agent", icon="🚓", lat=police_lat, lon=police_lon),
-                AgentDB(name="Ambulance Agent", icon="🚑", lat=ambulance_lat, lon=ambulance_lon),
-            ])
-            db.commit()
-            print("✅ Agents seeded with random locations")
-        db.close()
-    except Exception as e:
-        print(f"⚠️ Seeding error: {e}")
-
+        db.add_all([
+            AgentDB(name="Fire Agent", icon="🚒", lat=fire_lat, lon=fire_lon),
+            AgentDB(name="Police Agent", icon="🚓", lat=police_lat, lon=police_lon),
+            AgentDB(name="Ambulance Agent", icon="🚑", lat=ambulance_lat, lon=ambulance_lon),
+        ])
+        db.commit()
+        print("✅ Agents seeded")
+    db.close()
+except Exception as e:
+    print(f"⚠️ Init error: {e}")
 
 # Create FastAPI app
 app = FastAPI(title="Smart City AI Backend")
@@ -77,14 +63,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# Middleware to initialize database on first request
-@app.middleware("http")
-async def init_middleware(request, call_next):
-    _lazy_init()
-    response = await call_next(request)
-    return response
 
 
 # --- Models ---
@@ -182,7 +160,7 @@ def to_history_out(row) -> IncidentHistoryOut:
 
 
 def haversine(lat1, lon1, lat2, lon2):
-    R = 6371  # earth radius in km
+    R = 6371
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
     a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
@@ -207,7 +185,6 @@ def assign_agent_to_incident(incident_id: int, db: Session):
     if not incident or not agents:
         return None
 
-    # Map incident types to preferred agent types
     incident_type_mapping = {
         "fire": ["Fire Agent"],
         "medical": ["Ambulance Agent"],
@@ -221,7 +198,6 @@ def assign_agent_to_incident(incident_id: int, db: Session):
         "hazard": ["Fire Agent"],
     }
 
-    # Get preferred agent types for this incident
     incident_type_lower = incident.type.lower()
     preferred_agent_names = []
 
@@ -230,17 +206,12 @@ def assign_agent_to_incident(incident_id: int, db: Session):
             preferred_agent_names.extend(agent_types)
             break
 
-    # If no match, allow any agent
     if not preferred_agent_names:
         preferred_agent_names = [a.name for a in agents]
 
-    # Filter agents by type preference
     preferred_agents = [a for a in agents if a.name in preferred_agent_names]
-
-    # If no preferred agents available, use any available agent
     candidates = preferred_agents if preferred_agents else agents
 
-    # Find closest agent among candidates
     min_dist = float('inf')
     chosen = None
     for agent in candidates:
@@ -252,7 +223,6 @@ def assign_agent_to_incident(incident_id: int, db: Session):
     if chosen is None:
         return None
 
-    # Assign agent
     chosen.status = "Responding"
     chosen.current_incident = str(incident_id)
     chosen.decision = f"Assigned to {incident.type} incident {incident_id} at {datetime.now().isoformat()} (distance: {min_dist:.2f}km)"
@@ -278,11 +248,7 @@ def classify_incident(data: dict):
 @app.get("/search-address")
 def search_address(query: str = Query(..., min_length=3)):
     url = "https://nominatim.openstreetmap.org/search"
-    params = {
-        "q": query,
-        "format": "json",
-        "limit": 5
-    }
+    params = {"q": query, "format": "json", "limit": 5}
     resp = httpx.get(url, params=params, headers={"User-Agent": "smart-city-backend"})
     resp.raise_for_status()
     data = resp.json()
@@ -324,15 +290,10 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
     db.refresh(new_incident)
     log_event(db, new_incident.id, None, "CREATE_INCIDENT", f"New incident created: {new_incident.description}")
 
-    # Auto-assign agent immediately
     try:
-        assigned_agent = assign_agent_to_incident(new_incident.id, db)
-        if assigned_agent:
-            print(f"✅ Auto-assigned {assigned_agent.name} to incident {new_incident.id}")
-        else:
-            print(f"⚠️ No available agent for incident {new_incident.id}")
+        assign_agent_to_incident(new_incident.id, db)
     except Exception as e:
-        print(f"❌ Failed to assign agent: {e}")
+        print(f"Failed to assign agent: {e}")
 
     return to_incident_out(new_incident)
 
@@ -395,4 +356,5 @@ def get_stats(db: Session = Depends(get_session)):
 
 @app.get("/incident-history", response_model=List[IncidentHistoryOut])
 def incident_history(db: Session = Depends(get_session)):
-    return [to_history_out(row) for row in db.query(IncidentHistoryDB).order_]
+    return [to_history_out(row) for row in
+            db.query(IncidentHistoryDB).order_by(IncidentHistoryDB.timestamp.desc()).limit(100).all()]
