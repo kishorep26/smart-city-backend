@@ -344,7 +344,7 @@ def get_incidents(db: Session = Depends(get_session)):
 
 @app.post("/incidents", response_model=IncidentOut)
 def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
-    """Create a new incident and auto-assign agent"""
+    """Create a new incident with Dynamic Sector Deployment"""
     try:
         # Create new incident
         new_incident = IncidentDB(
@@ -359,51 +359,76 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
         db.add(new_incident)
         db.flush()
 
-        # Get preferred agent type for this incident
+        # 1. DYNAMIC SECTOR CHECK
+        # Check if we have agents nearby (within 50km)
+        existing_agents = db.query(AgentDB).all()
+        nearby_agents = [
+            a for a in existing_agents 
+            if calculate_distance(incident.location.lat, incident.location.lon, a.lat, a.lon) < 50
+        ]
+
+        if not nearby_agents:
+            print(f"⚠️ No agents in this sector ({incident.location.lat}, {incident.location.lon}). Deploying new Task Force.")
+            # Deploy new local agents for this city
+            new_agents_data = [
+                {"name": f"Local Fire {random.randint(10,99)}", "type": "fire", "icon": "🚒", "lat": incident.location.lat + 0.01, "lon": incident.location.lon + 0.01},
+                {"name": f"Local Police {random.randint(10,99)}", "type": "police", "icon": "🚓", "lat": incident.location.lat - 0.01, "lon": incident.location.lon - 0.01},
+                {"name": f"Local Medic {random.randint(10,99)}", "type": "medical", "icon": "🚑", "lat": incident.location.lat + 0.01, "lon": incident.location.lon - 0.01},
+            ]
+            for agent_data in new_agents_data:
+                new_agent = AgentDB(
+                    name=agent_data["name"], 
+                    type=agent_data["type"], 
+                    icon=agent_data["icon"],
+                    status="available",
+                    lat=agent_data["lat"],
+                    lon=agent_data["lon"],
+                    fuel=100.0,
+                    stress=0.0,
+                    role="local_unit",
+                    status_message="Deployed to new sector"
+                )
+                db.add(new_agent)
+            db.commit() # Commit new agents so we can use them immediately
+
+        # Refetch agents including new ones
         prepared_type = incident.type.lower()
         preferred_type = incident_type_mapping.get(prepared_type, "police")
 
-        # Find nearest available agent of preferred type
         available_agents = db.query(AgentDB).filter(
             AgentDB.status == "available",
             AgentDB.type == preferred_type
         ).all()
 
-        # If no preferred type available, get any available agent
+        # Fallback to any agent
         if not available_agents:
-            available_agents = db.query(AgentDB).filter(
-                AgentDB.status == "available"
-            ).all()
+            available_agents = db.query(AgentDB).filter(AgentDB.status == "available").all()
 
         if available_agents:
-            # Calculate distances and find nearest
-            nearest_agent = min(
-                available_agents,
-                key=lambda a: calculate_distance(
-                    incident.location.lat, incident.location.lon, a.lat, a.lon
-                )
-            )
+            # Smart Assignment: Prefer closest, but avoid Stressed/LowFuel agents if possible
+            candidates = []
+            for agent in available_agents:
+                dist = calculate_distance(incident.location.lat, incident.location.lon, agent.lat, agent.lon)
+                # Cost function: Distance + (Stress * 0.1) + (100 - Fuel) * 0.1
+                cost = dist + (agent.stress * 0.05) + ((100 - agent.fuel) * 0.05)
+                candidates.append((cost, agent, dist))
 
-            distance = calculate_distance(
-                incident.location.lat, incident.location.lon,
-                nearest_agent.lat, nearest_agent.lon
-            )
+            # Pick lowest cost
+            candidates.sort(key=lambda x: x[0])
+            best_match = candidates[0]
+            nearest_agent = best_match[1]
+            distance = best_match[2]
 
-            # Assign agent
+            # Assign
             new_incident.assigned_agent_id = nearest_agent.id
-            # Generate AI Decision Log
-            urgency = "HIGH" if incident.type in ["fire", "crime"] else "MED"
-            est_time = int(distance * 2)
             
-            # Simulated reasoning based on internal state
-            if nearest_agent.stress > 50:
-                 reasoning = "UNIT_STRESSED_BUT_NEAREST"
-            elif nearest_agent.fuel < 40:
-                 reasoning = "FUEL_CRITICAL_OVERRIDE"
-            else:
-                 reasoning = "OPTIMAL_PATH_FOUND"
-
-            decision_log = f"PRIORITY:{urgency} | {reasoning} | ETA:{est_time}m | DEPLOYING"
+            # Smart Reasoning Log
+            urgency = "HIGH" if incident.type in ["fire", "crime"] else "MED"
+            reason = "OPTIMAL"
+            if nearest_agent.stress > 60: reason = "STRESSED_ASSIGNMENT"
+            if nearest_agent.fuel < 30: reason = "LOW_FUEL_EMERGENCY"
+            
+            decision_log = f"Sector Deployment | {nearest_agent.name} | PRIORITY:{urgency} | {reason}"
 
             nearest_agent.status = "busy"
             nearest_agent.current_incident = str(new_incident.id)
@@ -411,17 +436,14 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
             nearest_agent.response_time = distance * 2
             nearest_agent.total_responses += 1
             nearest_agent.updated_at = datetime.now()
+            nearest_agent.status_message = f"Responding to Incident #{new_incident.id}"
             
-            # Reset simulation states for active duty
-            nearest_agent.status_message = "En route to scene"
-            if nearest_agent.fuel < 10: nearest_agent.fuel = 20.0 # Emergency reserve
-
-            # Log assignment
+            # Log history
             history = IncidentHistoryDB(
                 incident_id=new_incident.id,
                 agent_id=nearest_agent.id,
-                event_type="incident_created",
-                description=f"Incident created and assigned to {nearest_agent.name} ({distance:.2f}km away)"
+                event_type="agent_dispatched",
+                description=f"{decision_log} - Distance: {distance:.1f}km"
             )
             db.add(history)
 
@@ -430,6 +452,8 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
         if stats:
             stats.total_incidents += 1
             stats.active_incidents += 1
+            # Force update flag if needed (sqlalchemy usually handles change tracking)
+            stats.updated_at = datetime.now() 
 
         db.commit()
         db.refresh(new_incident)
@@ -443,29 +467,32 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
 
 @app.put("/incidents/{incident_id}/resolve", response_model=IncidentOut)
 def resolve_incident(incident_id: int, db: Session = Depends(get_session)):
-    """Mark incident as resolved and free up agent"""
+    """Mark incident as resolved, free agent, update stats"""
     incident = db.query(IncidentDB).filter(IncidentDB.id == incident_id).first()
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
 
+    if incident.status == "resolved":
+        return to_incident_out(incident)
+
     incident.status = "resolved"
 
-    # Free up assigned agent
+    # Free agent
     if incident.assigned_agent_id:
         agent = db.query(AgentDB).filter(AgentDB.id == incident.assigned_agent_id).first()
         if agent:
             agent.status = "available"
             agent.current_incident = None
-            agent.decision = "Available for assignment"
+            agent.decision = "Mission Complete - Returning to Patrol"
             agent.successful_responses += 1
-            agent.updated_at = datetime.now()
-
-            # Log resolution
+            agent.status_message = "Patrolling Sector"
+            agent.stress = max(0, agent.stress - 20) # Success reduces stress
+            
             history = IncidentHistoryDB(
                 incident_id=incident_id,
                 agent_id=agent.id,
-                event_type="incident_resolved",
-                description=f"Incident resolved by {agent.name}"
+                event_type="mission_complete",
+                description=f"Incident resolved by {agent.name}. Safety score increased."
             )
             db.add(history)
 
@@ -474,6 +501,17 @@ def resolve_incident(incident_id: int, db: Session = Depends(get_session)):
     if stats:
         stats.active_incidents = max(0, stats.active_incidents - 1)
         stats.resolved_incidents += 1
+        
+        # Recalculate global efficiency
+        total = stats.total_incidents
+        if total > 0:
+            # Simple efficiency metric: Resolved / Total * 100
+             # But let's make it 'smart': Based on average stress of agents
+             avg_stress = 0
+             agents = db.query(AgentDB).all()
+             if agents:
+                 avg_stress = sum([a.stress for a in agents]) / len(agents)
+             stats.average_efficiency = max(0, 100 - avg_stress)
 
     db.commit()
     db.refresh(incident)
