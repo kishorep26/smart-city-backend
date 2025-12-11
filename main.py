@@ -428,11 +428,11 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
     # 2. FALLBACK LEGACY LOGIC (If AI fails or no key)
     if not ai_success and incident.type in ["auto", "unknown", ""]:
         desc = incident.description.lower()
-        if any(x in desc for x in ["fire", "smoke", "burn", "flame", "explosion"]):
+        if any(x in desc for x in ["fire", "smoke", "burn", "flame", "explosion", "blaze", "inferno"]):
             final_type = "fire"
-        elif any(x in desc for x in ["hurt", "injur", "blood", "medi", "pain", "collap", "heart"]):
+        elif any(x in desc for x in ["hurt", "injur", "blood", "medi", "pain", "collap", "heart", "unconscious", "casualty"]):
             final_type = "medical"
-        elif any(x in desc for x in ["crash", "accident", "smash", "collision", "car"]):
+        elif any(x in desc for x in ["crash", "accident", "smash", "collision", "car", "wreck"]):
             final_type = "accident"
         else:
             final_type = "police"
@@ -454,40 +454,8 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
         db.add(new_incident)
         db.flush() # Get ID
         
-        # ... logic continues (Dynamic sector check)
-        # Check if we have agents nearby (within 50km)
-        existing_agents = db.query(AgentDB).all()
-        nearby_agents = [
-            a for a in existing_agents 
-            if calculate_distance(incident.location.lat, incident.location.lon, a.lat, a.lon) < 50
-        ]
-
-        if not nearby_agents:
-            print(f"⚠️ No agents in this sector ({incident.location.lat}, {incident.location.lon}). Deploying new Task Force.")
-            # Deploy new local agents for this city
-            new_agents_data = [
-                {"name": f"Local Fire {random.randint(10,99)}", "type": "fire", "icon": "🚒", "lat": incident.location.lat + 0.01, "lon": incident.location.lon + 0.01},
-                {"name": f"Local Police {random.randint(10,99)}", "type": "police", "icon": "🚓", "lat": incident.location.lat - 0.01, "lon": incident.location.lon - 0.01},
-                {"name": f"Local Medic {random.randint(10,99)}", "type": "medical", "icon": "🚑", "lat": incident.location.lat + 0.01, "lon": incident.location.lon - 0.01},
-            ]
-            for agent_data in new_agents_data:
-                new_agent = AgentDB(
-                    name=agent_data["name"], 
-                    type=agent_data["type"], 
-                    icon=agent_data["icon"],
-                    status="available",
-                    lat=agent_data["lat"],
-                    lon=agent_data["lon"],
-                    fuel=100.0,
-                    stress=0.0,
-                    role="local_unit",
-                    status_message="Deployed to new sector"
-                )
-                db.add(new_agent)
-            db.commit() # Commit new agents so we can use them immediately
-
         # Refetch agents including new ones
-        prepared_type = incident.type.lower()
+        prepared_type = final_type.lower()
         preferred_type = incident_type_mapping.get(prepared_type, "police")
 
         available_agents = db.query(AgentDB).filter(
@@ -495,12 +463,28 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
             AgentDB.type == preferred_type
         ).all()
 
-        # Fallback to any agent
+        # DYNAMIC PROVISIONING: If no specialized unit is available, SPAWN one.
         if not available_agents:
-            available_agents = db.query(AgentDB).filter(AgentDB.status == "available").all()
+            print(f"⚠️ No {preferred_type} units available. Activating RESERVE unit.")
+            reserve_agent = AgentDB(
+                name=f"Reserve {preferred_type.title()} {random.randint(100,999)}",
+                type=preferred_type,
+                icon="🚒" if preferred_type == "fire" else "🚑" if preferred_type == "medical" else "🚓",
+                status="available", # Will be set to busy immediately
+                lat=incident.location.lat + random.uniform(-0.01, 0.01),
+                lon=incident.location.lon + random.uniform(-0.01, 0.01),
+                fuel=100.0,
+                stress=0.0,
+                role="reserve_unit",
+                status_message="Activated from Reserve"
+            )
+            db.add(reserve_agent)
+            db.commit()
+            db.refresh(reserve_agent)
+            available_agents = [reserve_agent]
 
         if available_agents:
-            # Smart Assignment: Prefer closest, but avoid Stressed/LowFuel agents if possible
+            # Smart Assignment: Prefer closest
             candidates = []
             for agent in available_agents:
                 dist = calculate_distance(incident.location.lat, incident.location.lon, agent.lat, agent.lon)
@@ -518,10 +502,10 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
             new_incident.assigned_agent_id = nearest_agent.id
             
             # Smart Reasoning Log
-            urgency = "HIGH" if incident.type in ["fire", "crime"] else "MED"
+            urgency = "HIGH" if new_incident.type in ["fire", "crime"] else "MED"
             reason = "OPTIMAL"
-            if nearest_agent.stress > 60: reason = "STRESSED_ASSIGNMENT"
-            if nearest_agent.fuel < 30: reason = "LOW_FUEL_EMERGENCY"
+            if nearest_agent.role == "reserve_unit": reason = "RESERVE_ACTIVATION"
+            elif nearest_agent.stress > 60: reason = "STRESSED_ASSIGNMENT"
             
             decision_log = f"Sector Deployment | {nearest_agent.name} | PRIORITY:{urgency} | {reason}"
 
@@ -541,13 +525,12 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
                 description=f"{decision_log} - Distance: {distance:.1f}km"
             )
             db.add(history)
-
+            
         # Update stats
         stats = db.query(StatsDB).first()
         if stats:
             stats.total_incidents += 1
             stats.active_incidents += 1
-            # Force update flag if needed (sqlalchemy usually handles change tracking)
             stats.updated_at = datetime.now() 
 
         db.commit()
