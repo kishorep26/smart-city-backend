@@ -343,7 +343,8 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
         db.flush()
 
         # Get preferred agent type for this incident
-        preferred_type = incident_type_mapping.get(incident.type.lower(), "police")
+        prepared_type = incident.type.lower()
+        preferred_type = incident_type_mapping.get(prepared_type, "police")
 
         # Find nearest available agent of preferred type
         available_agents = db.query(AgentDB).filter(
@@ -379,6 +380,10 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
             nearest_agent.response_time = distance * 2  # Estimate: 2 min per km
             nearest_agent.total_responses += 1
             nearest_agent.updated_at = datetime.now()
+            
+            # Reset simulation states for active duty
+            nearest_agent.status_message = "En route to scene"
+            if nearest_agent.fuel < 10: nearest_agent.fuel = 20.0 # Emergency reserve
 
             # Log assignment
             history = IncidentHistoryDB(
