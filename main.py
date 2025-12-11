@@ -391,10 +391,24 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
 
             # Assign agent
             new_incident.assigned_agent_id = nearest_agent.id
+            # Generate AI Decision Log
+            urgency = "HIGH" if incident.type in ["fire", "crime"] else "MED"
+            est_time = int(distance * 2)
+            
+            # Simulated reasoning based on internal state
+            if nearest_agent.stress > 50:
+                 reasoning = "UNIT_STRESSED_BUT_NEAREST"
+            elif nearest_agent.fuel < 40:
+                 reasoning = "FUEL_CRITICAL_OVERRIDE"
+            else:
+                 reasoning = "OPTIMAL_PATH_FOUND"
+
+            decision_log = f"PRIORITY:{urgency} | {reasoning} | ETA:{est_time}m | DEPLOYING"
+
             nearest_agent.status = "busy"
             nearest_agent.current_incident = str(new_incident.id)
-            nearest_agent.decision = f"Responding to {incident.type} incident"
-            nearest_agent.response_time = distance * 2  # Estimate: 2 min per km
+            nearest_agent.decision = decision_log
+            nearest_agent.response_time = distance * 2
             nearest_agent.total_responses += 1
             nearest_agent.updated_at = datetime.now()
             
