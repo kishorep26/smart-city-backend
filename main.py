@@ -61,11 +61,14 @@ def _ensure_initialized():
                      "lon": center_lon + random.uniform(-0.02, 0.02)},
                 ]
 
+                # Check individual existence to be safe against race conditions
                 for agent_data in agents_data:
-                    db.add(AgentDB(**agent_data))
+                    exists = db.query(AgentDB).filter(AgentDB.name == agent_data["name"]).first()
+                    if not exists:
+                         db.add(AgentDB(**agent_data))
 
                 db.commit()
-                print(f"✅ Seeded {len(agents_data)} agents")
+                print(f"✅ Seeding complete")
 
             # Initialize stats if not exists
             stats = db.query(StatsDB).first()
