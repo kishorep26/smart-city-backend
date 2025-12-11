@@ -379,9 +379,22 @@ def get_incidents(db: Session = Depends(get_session)):
 def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
     """Create a new incident with Dynamic Sector Deployment"""
     try:
+        # 0. NLP CLASSIFICATION (Smart City Logic)
+        final_type = incident.type.lower()
+        if final_type in ["auto", "unknown", ""]:
+            desc = incident.description.lower()
+            if any(x in desc for x in ["fire", "smoke", "burn", "flame", "explosion"]):
+                final_type = "fire"
+            elif any(x in desc for x in ["hurt", "injur", "blood", "medi", "pain", "collap"]):
+                final_type = "medical"
+            elif any(x in desc for x in ["crash", "accident", "smash", "collision"]):
+                final_type = "accident" # mapped to police/ambulance usually
+            else:
+                final_type = "police" # default to security check
+
         # Create new incident
         new_incident = IncidentDB(
-            type=incident.type,
+            type=final_type,
             description=incident.description,
             status="active",
             lat=incident.location.lat,
