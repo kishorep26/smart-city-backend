@@ -388,63 +388,74 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
     # 1. AI CLASSIFICATION (GROQ Llama3)
     groq_key = os.getenv("GROQ_API_KEY")
     ai_success = False
+    ai_error_msg = None
 
-    if groq_key and incident.type == "auto":
-        try:
-            from groq import Groq  # Lazy import for safety
-            
-            client = Groq(api_key=groq_key)
-            completion = client.chat.completions.create(
-                model="llama3-8b-8192",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an AI Dispatcher. Analyze the emergency description. Return ONLY a JSON object with keys: 'type' (must be one of: 'fire', 'medical', 'police', 'accident'), 'severity' (1-10 int), and 'risk_analysis' (short string). Do not include markdown formatting."
-                    },
-                    {
-                        "role": "user",
-                        "content": incident.description
-                    }
-                ],
-                temperature=0,
-                max_tokens=100
-            )
-            
-            # Parse AI Response
-            content = completion.choices[0].message.content
-            # Clean possible markdown code blocks
-            content = content.replace("```json", "").replace("```", "").strip()
-            
-            ai_data = json.loads(content)
-            final_type = ai_data.get("type", "police").lower()
-            description_summary = f"{ai_data.get('risk_analysis', incident.description)} (Severity: {ai_data.get('severity')})"
-            ai_success = True
-            print(f"AI Classification: {final_type} | {description_summary}")
+    if incident.type == "auto":
+        if not groq_key:
+             ai_error_msg = "[AI FAIL: Missing GROQ_API_KEY Env Var]"
+        else:
+            try:
+                from groq import Groq  # Lazy import
+                
+                client = Groq(api_key=groq_key)
+                completion = client.chat.completions.create(
+                    model="llama3-8b-8192",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are an AI Dispatcher. Analyze the emergency description. Return ONLY a JSON object with keys: 'type' (must be one of: 'fire', 'medical', 'police', 'accident'), 'severity' (1-10 int), and 'risk_analysis' (short string). Do not include markdown formatting."
+                        },
+                        {
+                            "role": "user",
+                            "content": incident.description
+                        }
+                    ],
+                    temperature=0,
+                    max_tokens=100
+                )
+                
+                # Parse AI Response
+                content = completion.choices[0].message.content
+                content = content.replace("```json", "").replace("```", "").strip()
+                
+                ai_data = json.loads(content)
+                final_type = ai_data.get("type", "police").lower()
+                description_summary = f"{ai_data.get('risk_analysis', incident.description)} (Severity: {ai_data.get('severity')})"
+                ai_success = True
+                print(f"AI Classification: {final_type} | {description_summary}")
 
-        except Exception as e:
-            print(f"Groq AI Failed (Import or Runtime): {e}")
-            ai_success = False
+            except Exception as e:
+                ai_error_msg = f"[AI FAIL: {str(e)}]"
+                print(f"Groq AI Failed: {e}")
+                ai_success = False
 
     # 2. FALLBACK LEGACY LOGIC (If AI fails or no key)
     if not ai_success and incident.type in ["auto", "unknown", ""]:
         desc = incident.description.lower()
         if any(x in desc for x in ["fire", "smoke", "burn", "flame", "explosion", "blaze", "inferno"]):
             final_type = "fire"
-        elif any(x in desc for x in ["hurt", "injur", "blood", "medi", "pain", "collap", "heart", "unconscious", "casualty"]):
+        elif any(x in desc for x in ["hurt", "injur", "blood", "medi", "pain", "collap", "heart", "unconscious", "casualty", "infarction"]):
             final_type = "medical"
-        elif any(x in desc for x in ["crash", "accident", "smash", "collision", "car", "wreck"]):
+        elif any(x in desc for x in ["crash", "accident", "smash", "collision", "wreck"]):
             final_type = "accident"
         else:
             final_type = "police"
 
     elif not ai_success and incident.type != "auto":
         final_type = incident.type
+        
+    # Prepare final description
+    final_desc = incident.description
+    if ai_success:
+        final_desc = description_summary
+    elif ai_error_msg:
+        final_desc = f"{ai_error_msg} {incident.description}"
 
     try:
         # Create new incident
         new_incident = IncidentDB(
             type=final_type,
-            description=description_summary if ai_success else incident.description,
+            description=final_desc,
             status="active",
             lat=incident.location.lat,
             lon=incident.location.lon,
