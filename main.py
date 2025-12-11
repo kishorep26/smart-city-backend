@@ -186,9 +186,42 @@ class StatsOut(BaseModel):
     active_incidents: int
     resolved_incidents: int
     average_response_time: float
-
+    total_agents: int = 0
+    active_agents: int = 0
+    
     class Config:
         from_attributes = True
+
+# ... (omitted code) ...
+
+@app.get("/stats", response_model=StatsOut)
+def get_stats(db: Session = Depends(get_session)):
+    """Get system statistics"""
+    stats = db.query(StatsDB).first()
+    
+    # calculate live agent stats
+    total_agents = db.query(AgentDB).count()
+    active_agents = db.query(AgentDB).filter(AgentDB.status != "available").count()
+    
+    if not stats:
+        return StatsOut(
+            total_incidents=0,
+            active_incidents=0,
+            resolved_incidents=0,
+            average_response_time=0.0,
+            total_agents=total_agents,
+            active_agents=active_agents
+        )
+        
+    # Return hybrid stats (persistent + live)
+    return StatsOut(
+        total_incidents=stats.total_incidents,
+        active_incidents=stats.active_incidents,
+        resolved_incidents=stats.resolved_incidents,
+        average_response_time=stats.average_response_time,
+        total_agents=total_agents,
+        active_agents=active_agents
+    )
 
 
 class IncidentHistoryOut(BaseModel):
@@ -522,15 +555,30 @@ def resolve_incident(incident_id: int, db: Session = Depends(get_session)):
 def get_stats(db: Session = Depends(get_session)):
     """Get system statistics"""
     stats = db.query(StatsDB).first()
+    
+    # calculate live agent stats
+    total_agents = db.query(AgentDB).count()
+    active_agents = db.query(AgentDB).filter(AgentDB.status != "available").count()
+    
     if not stats:
-        # Return default stats if none exist
         return StatsOut(
             total_incidents=0,
             active_incidents=0,
             resolved_incidents=0,
-            average_response_time=0.0
+            average_response_time=0.0,
+            total_agents=total_agents,
+            active_agents=active_agents
         )
-    return stats
+        
+    # Return hybrid stats (persistent + live)
+    return StatsOut(
+        total_incidents=stats.total_incidents,
+        active_incidents=stats.active_incidents,
+        resolved_incidents=stats.resolved_incidents,
+        average_response_time=stats.average_response_time,
+        total_agents=total_agents,
+        active_agents=active_agents
+    )
 
 
 @app.get("/incident-history", response_model=List[IncidentHistoryOut])
