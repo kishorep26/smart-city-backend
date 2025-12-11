@@ -7,6 +7,9 @@ from datetime import datetime
 import httpx
 import math
 import random
+import os
+import json
+from groq import Groq
 
 from database import (
     SessionLocal,
@@ -374,17 +377,6 @@ def get_incidents(db: Session = Depends(get_session)):
     incidents = db.query(IncidentDB).all()
     return [to_incident_out(incident) for incident in incidents]
 
-
-@app.post("/incidents", response_model=IncidentOut)
-def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
-    """Create a new incident with Dynamic Sector Deployment"""
-
-# ... imports
-import os
-import json
-from groq import Groq
-
-# ...
 
 @app.post("/incidents", response_model=IncidentOut)
 def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
