@@ -378,24 +378,80 @@ def get_incidents(db: Session = Depends(get_session)):
 @app.post("/incidents", response_model=IncidentOut)
 def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
     """Create a new incident with Dynamic Sector Deployment"""
-    try:
-        # 0. NLP CLASSIFICATION (Smart City Logic)
-        final_type = incident.type.lower()
-        if final_type in ["auto", "unknown", ""]:
-            desc = incident.description.lower()
-            if any(x in desc for x in ["fire", "smoke", "burn", "flame", "explosion"]):
-                final_type = "fire"
-            elif any(x in desc for x in ["hurt", "injur", "blood", "medi", "pain", "collap"]):
-                final_type = "medical"
-            elif any(x in desc for x in ["crash", "accident", "smash", "collision"]):
-                final_type = "accident" # mapped to police/ambulance usually
-            else:
-                final_type = "police" # default to security check
 
+# ... imports
+import os
+import json
+from groq import Groq
+
+# ...
+
+@app.post("/incidents", response_model=IncidentOut)
+def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
+    """Create a new incident with AI Classification (Groq)"""
+    
+    # Defaults
+    final_type = "police"
+    description_summary = incident.description
+    
+    # 1. AI CLASSIFICATION (GROQ Llama3)
+    groq_key = os.getenv("GROQ_API_KEY")
+    ai_success = False
+
+    if groq_key and incident.type == "auto":
+        try:
+            client = Groq(api_key=groq_key)
+            completion = client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an AI Dispatcher. Analyze the emergency description. Return ONLY a JSON object with keys: 'type' (must be one of: 'fire', 'medical', 'police', 'accident'), 'severity' (1-10 int), and 'risk_analysis' (short string). Do not include markdown formatting."
+                    },
+                    {
+                        "role": "user",
+                        "content": incident.description
+                    }
+                ],
+                temperature=0,
+                max_tokens=100
+            )
+            
+            # Parse AI Response
+            content = completion.choices[0].message.content
+            # Clean possible markdown code blocks
+            content = content.replace("```json", "").replace("```", "").strip()
+            
+            ai_data = json.loads(content)
+            final_type = ai_data.get("type", "police").lower()
+            description_summary = f"{ai_data.get('risk_analysis', incident.description)} (Severity: {ai_data.get('severity')})"
+            ai_success = True
+            print(f"AI Classification: {final_type} | {description_summary}")
+
+        except Exception as e:
+            print(f"Groq AI Failed: {e}")
+            ai_success = False
+
+    # 2. FALLBACK LEGACY LOGIC (If AI fails or no key)
+    if not ai_success and incident.type in ["auto", "unknown", ""]:
+        desc = incident.description.lower()
+        if any(x in desc for x in ["fire", "smoke", "burn", "flame", "explosion"]):
+            final_type = "fire"
+        elif any(x in desc for x in ["hurt", "injur", "blood", "medi", "pain", "collap", "heart"]):
+            final_type = "medical"
+        elif any(x in desc for x in ["crash", "accident", "smash", "collision", "car"]):
+            final_type = "accident"
+        else:
+            final_type = "police"
+
+    elif not ai_success and incident.type != "auto":
+        final_type = incident.type
+
+    try:
         # Create new incident
         new_incident = IncidentDB(
             type=final_type,
-            description=incident.description,
+            description=description_summary if ai_success else incident.description,
             status="active",
             lat=incident.location.lat,
             lon=incident.location.lon,
@@ -403,9 +459,9 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
             created_at=datetime.now()
         )
         db.add(new_incident)
-        db.flush()
-
-        # 1. DYNAMIC SECTOR CHECK
+        db.flush() # Get ID
+        
+        # ... logic continues (Dynamic sector check)
         # Check if we have agents nearby (within 50km)
         existing_agents = db.query(AgentDB).all()
         nearby_agents = [
