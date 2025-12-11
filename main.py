@@ -628,3 +628,58 @@ def assign_agent(incident_id: int, db: Session = Depends(get_session)):
     db.commit()
 
     return {"status": "assigned", "agent": to_agent_out(nearest_agent)}
+
+
+@app.get("/analytics/prediction")
+def predict_risk_zones(db: Session = Depends(get_session)):
+    """
+    MASTERS LEVEL FEATURE: Unsupervised Learning (K-Means Clustering)
+    Analyzes historical incident data to predict future high-risk zones.
+    """
+    try:
+        import pandas as pd
+        import numpy as np
+        from sklearn.cluster import KMeans
+    except ImportError:
+        return {"error": "ML dependencies (scikit-learn, pandas) not installed"}
+
+    # 1. Fetch Data
+    incidents = db.query(IncidentDB).all()
+    if len(incidents) < 5:
+        # Not enough data for clustering
+        return {"status": "insufficient_data", "message": "Need more incidents to train model"}
+
+    # 2. Prepare Feature Matrix
+    data = [{"lat": i.lat, "lon": i.lon} for i in incidents]
+    df = pd.DataFrame(data)
+
+    # 3. Train K-Means Model
+    # Dynamic clusters based on volume
+    n_clusters = min(5, len(incidents) // 5) + 1
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    kmeans.fit(df[['lat', 'lon']])
+
+    # 4. Construct Risk Zones
+    predictions = []
+    centers = kmeans.cluster_centers_
+    labels = kmeans.labels_
+
+    # Calculate density for each cluster
+    unique, counts = np.unique(labels, return_counts=True)
+    cluster_counts = dict(zip(unique, counts))
+
+    for i, center in enumerate(centers):
+        count = cluster_counts.get(i, 0)
+        risk_score = count / len(incidents)  # Normalized density
+        
+        predictions.append({
+            "id": i,
+            "lat": float(center[0]),
+            "lon": float(center[1]),
+            "risk_score": float(risk_score),
+            "radius": 500 + (risk_score * 2000), 
+            "label": "HIGH RISK ZONE" if risk_score > 0.3 else "MODERATE RISK ZONE"
+        })
+
+    predictions.sort(key=lambda x: x['risk_score'], reverse=True)
+    return {"status": "success", "zones": predictions}
