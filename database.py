@@ -15,7 +15,19 @@ if "sslmode" not in DATABASE_URL and "supabase" in DATABASE_URL.lower():
     separator = "&" if "?" in DATABASE_URL else "?"
     DATABASE_URL = f"{DATABASE_URL}{separator}sslmode=require"
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=5, max_overflow=10)
+# Fix for Vercel/Supabase IPv6 issues: force keepalives and appropriate timeouts
+engine = create_engine(
+    DATABASE_URL, 
+    pool_pre_ping=True, 
+    pool_size=5, 
+    max_overflow=10,
+    connect_args={
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5
+    }
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
