@@ -633,53 +633,70 @@ def assign_agent(incident_id: int, db: Session = Depends(get_session)):
 @app.get("/analytics/prediction")
 def predict_risk_zones(db: Session = Depends(get_session)):
     """
-    MASTERS LEVEL FEATURE: Unsupervised Learning (K-Means Clustering)
-    Analyzes historical incident data to predict future high-risk zones.
+    MASTERS LEVEL FEATURE: Custom Unsupervised Learning Algorithm
+    (Scikit-Learn removed to optimize Serverless utilization; implemented internal K-Means)
     """
-    try:
-        import pandas as pd
-        import numpy as np
-        from sklearn.cluster import KMeans
-    except ImportError:
-        return {"error": "ML dependencies (scikit-learn, pandas) not installed"}
-
     # 1. Fetch Data
     incidents = db.query(IncidentDB).all()
     if len(incidents) < 5:
-        # Not enough data for clustering
         return {"status": "insufficient_data", "message": "Need more incidents to train model"}
 
-    # 2. Prepare Feature Matrix
-    data = [{"lat": i.lat, "lon": i.lon} for i in incidents]
-    df = pd.DataFrame(data)
+    # 2. Prepare Data Points
+    points = [(i.lat, i.lon) for i in incidents]
+    
+    # --- CUSTOM K-MEANS IMPLEMENTATION (Lightweight) ---
+    def custom_kmeans(data, k, max_iterations=10):
+        # 1. Initialize random centroids
+        centroids = random.sample(data, k)
+        
+        for _ in range(max_iterations):
+            # 2. Assign clusters
+            clusters = [[] for _ in range(k)]
+            for point in data:
+                # Find nearest centroid
+                distances = [math.sqrt((point[0]-c[0])**2 + (point[1]-c[1])**2) for c in centroids]
+                closest_idx = distances.index(min(distances))
+                clusters[closest_idx].append(point)
+            
+            # 3. Update centroids
+            new_centroids = []
+            for i in range(k):
+                cluster_points = clusters[i]
+                if not cluster_points:
+                    new_centroids.append(centroids[i]) # Keep old if empty
+                else:
+                    avg_lat = sum(p[0] for p in cluster_points) / len(cluster_points)
+                    avg_lon = sum(p[1] for p in cluster_points) / len(cluster_points)
+                    new_centroids.append((avg_lat, avg_lon))
+            
+            # Check convergence (simplified)
+            if new_centroids == centroids:
+                break
+            centroids = new_centroids
+            
+        return centroids, clusters
 
-    # 3. Train K-Means Model
-    # Dynamic clusters based on volume
-    n_clusters = min(5, len(incidents) // 5) + 1
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    kmeans.fit(df[['lat', 'lon']])
+    # ---------------------------------------------------
 
-    # 4. Construct Risk Zones
+    # Dynamic K based on density (roughly 1 cluster per 5 incidents)
+    k = min(5, len(points) // 5) + 1
+    centers, clusters = custom_kmeans(points, k)
+
     predictions = []
-    centers = kmeans.cluster_centers_
-    labels = kmeans.labels_
-
-    # Calculate density for each cluster
-    unique, counts = np.unique(labels, return_counts=True)
-    cluster_counts = dict(zip(unique, counts))
-
     for i, center in enumerate(centers):
-        count = cluster_counts.get(i, 0)
-        risk_score = count / len(incidents)  # Normalized density
+        if not clusters[i]: continue
+        
+        # Calculate Risk Score (Density)
+        risk_score = len(clusters[i]) / len(points)
         
         predictions.append({
             "id": i,
-            "lat": float(center[0]),
-            "lon": float(center[1]),
-            "risk_score": float(risk_score),
+            "lat": center[0],
+            "lon": center[1],
+            "risk_score": risk_score,
             "radius": 500 + (risk_score * 2000), 
             "label": "HIGH RISK ZONE" if risk_score > 0.3 else "MODERATE RISK ZONE"
         })
 
     predictions.sort(key=lambda x: x['risk_score'], reverse=True)
-    return {"status": "success", "zones": predictions}
+    return {"status": "success", "zones": predictions, "algorithm": "custom_kmeans_v1"}
