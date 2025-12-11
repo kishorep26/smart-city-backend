@@ -447,3 +447,54 @@ def classify_incident(data: dict):
         return {"category": "crime", "confidence": 0.90}
     else:
         return {"category": "other", "confidence": 0.75}
+
+
+@app.post("/assign-agent")
+def assign_agent(incident_id: int, db: Session = Depends(get_session)):
+    """Manually trigger agent assignment for an incident"""
+    incident = db.query(IncidentDB).filter(IncidentDB.id == incident_id).first()
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    if incident.assigned_agent_id:
+        return {"message": "Agent already assigned", "agent_id": incident.assigned_agent_id}
+
+    # reuse logic from create_incident ideally, but for now simple assignment
+    preferred_type = incident_type_mapping.get(incident.type.lower(), "police")
+    
+    available_agents = db.query(AgentDB).filter(
+        AgentDB.status == "available",
+        AgentDB.type == preferred_type
+    ).all()
+    
+    if not available_agents:
+        available_agents = db.query(AgentDB).filter(AgentDB.status == "available").all()
+        
+    if not available_agents:
+        raise HTTPException(status_code=404, detail="No available agents")
+
+    nearest_agent = min(
+        available_agents,
+        key=lambda a: calculate_distance(incident.lat, incident.lon, a.lat, a.lon)
+    )
+
+    distance = calculate_distance(incident.lat, incident.lon, nearest_agent.lat, nearest_agent.lon)
+
+    incident.assigned_agent_id = nearest_agent.id
+    nearest_agent.status = "busy"
+    nearest_agent.current_incident = str(incident.id)
+    nearest_agent.decision = f"Manual assignment to {incident.type}"
+    nearest_agent.response_time = distance * 2
+    nearest_agent.total_responses += 1
+    nearest_agent.updated_at = datetime.now()
+
+    history = IncidentHistoryDB(
+        incident_id=incident.id,
+        agent_id=nearest_agent.id,
+        event_type="agent_assigned",
+        description=f"Agent {nearest_agent.name} manually assigned ({distance:.2f}km)"
+    )
+    db.add(history)
+    db.commit()
+
+    return {"status": "assigned", "agent": to_agent_out(nearest_agent)}
