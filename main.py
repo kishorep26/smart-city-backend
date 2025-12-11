@@ -31,6 +31,20 @@ def _ensure_initialized():
     try:
         print("Initializing database...")
         create_tables()
+        
+        # Auto-migration: Ensure new columns exist (Self-Healing)
+        try:
+            from sqlalchemy import text
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE agents ADD COLUMN IF NOT EXISTS fuel FLOAT DEFAULT 100.0"))
+                conn.execute(text("ALTER TABLE agents ADD COLUMN IF NOT EXISTS stress FLOAT DEFAULT 0.0"))
+                conn.execute(text("ALTER TABLE agents ADD COLUMN IF NOT EXISTS role VARCHAR DEFAULT 'standard'"))
+                conn.execute(text("ALTER TABLE agents ADD COLUMN IF NOT EXISTS status_message VARCHAR"))
+                conn.commit()
+            print("✅ Schema migration verified")
+        except Exception as e:
+            print(f"⚠️ Migration warning (safe to ignore if columns exist): {e}")
+
         print("✅ Tables created")
 
         db = SessionLocal()
