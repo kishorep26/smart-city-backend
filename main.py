@@ -9,7 +9,6 @@ import math
 import random
 import os
 import json
-from groq import Groq
 
 from database import (
     SessionLocal,
@@ -392,6 +391,8 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
 
     if groq_key and incident.type == "auto":
         try:
+            from groq import Groq  # Lazy import for safety
+            
             client = Groq(api_key=groq_key)
             completion = client.chat.completions.create(
                 model="llama3-8b-8192",
@@ -421,7 +422,7 @@ def create_incident(incident: IncidentIn, db: Session = Depends(get_session)):
             print(f"AI Classification: {final_type} | {description_summary}")
 
         except Exception as e:
-            print(f"Groq AI Failed: {e}")
+            print(f"Groq AI Failed (Import or Runtime): {e}")
             ai_success = False
 
     # 2. FALLBACK LEGACY LOGIC (If AI fails or no key)
