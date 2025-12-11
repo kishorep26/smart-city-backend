@@ -566,7 +566,27 @@ def resolve_incident(incident_id: int, db: Session = Depends(get_session)):
 
 @app.get("/stats", response_model=StatsOut)
 def get_stats(db: Session = Depends(get_session)):
-    """Get system statistics"""
+    """Get system statistics and SIMULATE WORLD TICKS"""
+    
+    # --- SIMULATION TICK: REFUELING LOGIC ---
+    # This runs every time the frontend polls stats (every 3s)
+    agents = db.query(AgentDB).all()
+    for agent in agents:
+        if agent.status == "refueling":
+             agent.fuel += 15.0 # Recover fuel
+             if agent.fuel >= 100:
+                 agent.fuel = 100.0
+                 agent.status = "available"
+                 agent.status_message = "Refueled and ready"
+        
+        elif agent.status == "available" and (agent.fuel < 20 or agent.stress > 80):
+             agent.status = "refueling"
+             agent.status_message = "Low fuel/High stress - Returning to base"
+             # Unassign if for some reason assigned (shouldn't happen if logic is good)
+    
+    db.commit()
+    # ----------------------------------------
+
     stats = db.query(StatsDB).first()
     
     # calculate live agent stats
