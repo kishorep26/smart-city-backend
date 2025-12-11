@@ -149,9 +149,16 @@ class AgentOut(BaseModel):
     efficiency: float
     total_responses: int
     successful_responses: int
+    successful_responses: int
     updated_at: Optional[datetime] = None
     lat: float
     lon: float
+    
+    # Advanced Stats
+    fuel: float
+    stress: float
+    role: str
+    status_message: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -239,8 +246,51 @@ def to_agent_out(agent: AgentDB) -> AgentOut:
         successful_responses=agent.successful_responses,
         updated_at=agent.updated_at,
         lat=agent.lat,
-        lon=agent.lon
+        lon=agent.lon,
+        fuel=agent.fuel,
+        stress=agent.stress,
+        role=agent.role,
+        status_message=agent.status_message
     )
+
+
+def simulate_tick(db: Session):
+    """Simulate agent states (fuel burn, stress, movement)"""
+    agents = db.query(AgentDB).all()
+    
+    for agent in agents:
+        # Recover if available
+        if agent.status == "available":
+            agent.stress = max(0.0, agent.stress - 0.5)
+            agent.fuel = max(0.0, agent.fuel - 0.05) # Idling consumes fuel too
+            agent.status_message = "Patrolling sector"
+            
+            # Auto-refuel if critical
+            if agent.fuel < 20.0:
+               agent.status = "refueling"
+               agent.status_message = "Low fuel - Returning to base"
+               
+        # Burn resources if busy
+        elif agent.status == "busy":
+            agent.stress = min(100.0, agent.stress + 0.8)
+            agent.fuel = max(0.0, agent.fuel - 0.2)
+            agent.status_message = f"Responding to Incident #{agent.current_incident}"
+            
+        # Refueling state
+        elif agent.status == "refueling":
+            agent.fuel = min(100.0, agent.fuel + 5.0)
+            agent.stress = max(0.0, agent.stress - 2.0)
+            agent.status_message = "Refueling at station"
+            
+            if agent.fuel >= 99.0:
+                agent.status = "available"
+        
+        # Random position drift for 'patrolling' effect
+        if agent.status == "available" and agent.fuel > 0:
+            agent.lat += random.uniform(-0.0005, 0.0005)
+            agent.lon += random.uniform(-0.0005, 0.0005)
+            
+    db.commit()
 
 
 # --- API Routes ---
@@ -258,6 +308,12 @@ def health():
 @app.get("/agents", response_model=List[AgentOut])
 def get_agents(db: Session = Depends(get_session)):
     """Get all agents"""
+    # Trigger simulation tick
+    try:
+        simulate_tick(db)
+    except Exception as e:
+        print(f"Simulation tick failed: {e}")
+        
     agents = db.query(AgentDB).all()
     return [to_agent_out(agent) for agent in agents]
 

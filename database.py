@@ -56,6 +56,13 @@ class AgentDB(Base):
     decision = Column(String, nullable=True)
     response_time = Column(Float, default=0.0)
     efficiency = Column(Float, default=90.0)
+    
+    # Advanced Simulation Stats
+    fuel = Column(Float, default=100.0)  # 0-100%
+    stress = Column(Float, default=0.0)  # 0-100%
+    role = Column(String, default="standard") # expert, trainee, leader
+    status_message = Column(String, nullable=True) # "Refuelling", "Patrolling", etc.
+    
     total_responses = Column(Integer, default=0)
     successful_responses = Column(Integer, default=0)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
