@@ -651,6 +651,30 @@ def get_stats(db: Session = Depends(get_session)):
     """Get system statistics and SIMULATE WORLD TICKS"""
     
     # --- SIMULATION TICK ---
+    
+    # 0. Auto-Resolve Stale Incidents (> 6 hours)
+    cutoff = datetime.now().timestamp() - (6 * 3600) # 6 hours ago
+    stale_incidents = db.query(IncidentDB).filter(
+        IncidentDB.status != "resolved",
+        # SQLAlchemy sqlite/postgres compatibility for timestamp comparison can be tricky
+        # simplified check: fetch all active, check in python if list is small, or use precise sql
+        IncidentDB.timestamp < datetime.fromtimestamp(cutoff)
+    ).all()
+    
+    for inc in stale_incidents:
+        inc.status = "resolved"
+        # Free up agent if assigned
+        if inc.assigned_agent_id:
+            agent = db.query(AgentDB).filter(AgentDB.id == inc.assigned_agent_id).first()
+            if agent:
+                agent.status = "available"
+                agent.current_incident = None
+                agent.decision = "Auto-resolved (Stale)"
+                agent.status_message = "Patrolling Sector"
+        
+        # Log it
+        # (Optional)
+
     agents = db.query(AgentDB).all()
     for agent in agents:
         # Auto-Cleanup: Remove Reserve units if they are idle (prevents bloat)
