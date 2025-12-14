@@ -607,50 +607,113 @@ def resolve_incident(incident_id: int, db: Session = Depends(get_session)):
     return to_incident_out(incident)
 
 
+@app.post("/reset")
+def reset_system(db: Session = Depends(get_session)):
+    """Reset the entire system: Clear incidents, agents, and re-seed"""
+    try:
+        # 1. Clear Tables
+        db.query(IncidentHistoryDB).delete()
+        db.query(IncidentDB).delete()
+        db.query(AgentDB).delete()
+        db.query(StatsDB).delete()
+        
+        # 2. Reset Stats
+        stats = StatsDB(total_incidents=0, active_incidents=0, resolved_incidents=0, average_response_time=0.0)
+        db.add(stats)
+        
+        # 3. Re-seed Agents (Standard Patrols)
+        center_lat, center_lon = 40.7831, -73.9712
+        agents_data = [
+            {"name": "Fire Engine 1", "type": "fire", "icon": "🚒", "lat": center_lat + 0.01, "lon": center_lon - 0.01},
+            {"name": "Fire Engine 2", "type": "fire", "icon": "🚒", "lat": center_lat - 0.01, "lon": center_lon + 0.01},
+            {"name": "Police Patrol 1", "type": "police", "icon": "🚓", "lat": center_lat + 0.02, "lon": center_lon},
+            {"name": "Police Patrol 2", "type": "police", "icon": "🚓", "lat": center_lat - 0.02, "lon": center_lon},
+            {"name": "Ambualnce 1", "type": "medical", "icon": "🚑", "lat": center_lat, "lon": center_lon + 0.02},
+            {"name": "Ambualnce 2", "type": "medical", "icon": "🚑", "lat": center_lat, "lon": center_lon - 0.02},
+        ]
+        
+        for ad in agents_data:
+            agent = AgentDB(
+                name=ad["name"], type=ad["type"], icon=ad["icon"],
+                status="available", lat=ad["lat"], lon=ad["lon"],
+                fuel=100.0, stress=0.0, role="standard", status_message="Patrolling Sector"
+            )
+            db.add(agent)
+            
+        db.commit()
+        return {"status": "reset_complete", "message": "System reset to factory state"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/stats", response_model=StatsOut)
 def get_stats(db: Session = Depends(get_session)):
     """Get system statistics and SIMULATE WORLD TICKS"""
     
-    # --- SIMULATION TICK: REFUELING LOGIC ---
-    # This runs every time the frontend polls stats (every 3s)
+    # --- SIMULATION TICK ---
     agents = db.query(AgentDB).all()
     for agent in agents:
-        if agent.status == "refueling":
-             agent.fuel += 15.0 # Recover fuel
-             if agent.fuel >= 100:
-                 agent.fuel = 100.0
-                 agent.status = "available"
-                 agent.status_message = "Refueled and ready"
+        # Auto-Cleanup: Remove Reserve units if they are idle (prevents bloat)
+        if agent.role == "reserve_unit" and agent.status == "available":
+            # 10% chance to despawn per tick if idle, or just despawn immediately to be clean
+            if random.random() < 0.2: 
+                db.delete(agent)
+                continue
+
+        # ... (Existing Logic) ...
+        if agent.status == "available":
+            agent.stress = max(0.0, agent.stress - 0.5)
+            agent.fuel = max(0.0, agent.fuel - 0.05)
+            agent.status_message = "Patrolling sector"
+            
+            if agent.fuel < 20.0:
+               agent.status = "refueling"
+               agent.status_message = "Low fuel - Returning to base"
+               
+        elif agent.status == "busy":
+            agent.stress = min(100.0, agent.stress + 0.8)
+            agent.fuel = max(0.0, agent.fuel - 0.2)
+            
+        elif agent.status == "refueling":
+            agent.fuel = min(100.0, agent.fuel + 5.0)
+            agent.stress = max(0.0, agent.stress - 2.0)
+            agent.status_message = "Refueling at station"
+            if agent.fuel >= 99.0:
+                agent.status = "available"
         
-        elif agent.status == "available" and (agent.fuel < 20 or agent.stress > 80):
-             agent.status = "refueling"
-             agent.status_message = "Low fuel/High stress - Returning to base"
-             # Unassign if for some reason assigned (shouldn't happen if logic is good)
-    
+        # Random drift
+        if agent.status == "available":
+            agent.lat += random.uniform(-0.0005, 0.0005)
+            agent.lon += random.uniform(-0.0005, 0.0005)
+            
     db.commit()
-    # ----------------------------------------
+    # -----------------------
 
     stats = db.query(StatsDB).first()
     
-    # calculate live agent stats
+    # ACCURATE COUNTS via DB Query (Fixes 'Issue 4' & 'Issue 5')
+    active_incidents_count = db.query(IncidentDB).filter(IncidentDB.status != "resolved").count()
+    total_incidents_count = db.query(IncidentDB).count()
+    resolved_incidents_count = db.query(IncidentDB).filter(IncidentDB.status == "resolved").count()
+    
     total_agents = db.query(AgentDB).count()
     active_agents = db.query(AgentDB).filter(AgentDB.status != "available").count()
     
+    # If stats table is drifting, fallback to real counts
     if not stats:
         return StatsOut(
-            total_incidents=0,
-            active_incidents=0,
-            resolved_incidents=0,
+            total_incidents=total_incidents_count,
+            active_incidents=active_incidents_count,
+            resolved_incidents=resolved_incidents_count,
             average_response_time=0.0,
             total_agents=total_agents,
             active_agents=active_agents
         )
         
-    # Return hybrid stats (persistent + live)
     return StatsOut(
-        total_incidents=stats.total_incidents,
-        active_incidents=stats.active_incidents,
-        resolved_incidents=stats.resolved_incidents,
+        total_incidents=total_incidents_count, # Use real count
+        active_incidents=active_incidents_count, # Use real count
+        resolved_incidents=resolved_incidents_count, # Use real count
         average_response_time=stats.average_response_time,
         total_agents=total_agents,
         active_agents=active_agents
