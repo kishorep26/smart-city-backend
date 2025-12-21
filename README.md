@@ -1,4 +1,4 @@
-# 🚀 Smart City AI - Backend API
+# 🚀 Sentinel Command Backend API
 
 <div align="center">
 
@@ -9,7 +9,7 @@
 
 **High-performance REST API for AI-powered emergency response management**
 
-[API Documentation](https://smart-city-backend-production-a1f3.up.railway.app/docs) • [Frontend Repo](https://github.com/kishorep26/smart-city) • [Live Demo](https://smart-city-rho.vercel.app)
+[API Documentation](https://sentinel-command-backend-production.up.railway.app/docs)
 
 </div>
 
@@ -17,7 +17,7 @@
 
 ## 🎯 Overview
 
-The Smart City AI Backend is a FastAPI-based REST API that powers an intelligent emergency response system. It handles incident management, agent assignment using proximity-based algorithms, real-time status tracking, and maintains a complete audit trail of all system decisions.
+The Sentinel Command Backend is a FastAPI-based REST API that powers an intelligent emergency response system. It handles incident management, agent assignment using proximity-based algorithms, real-time status tracking, and maintains a complete audit trail of all system decisions.
 
 ### ✨ Key Features
 
@@ -58,8 +58,8 @@ The Smart City AI Backend is a FastAPI-based REST API that powers an intelligent
 ### Installation
 
 1. **Clone the repository**
-git clone https://github.com/kishorep26/smart-city-backend.git
-cd smart-city-backend
+git clone https://github.com/kishorep26/sentinel-command-backend.git
+cd sentinel-command-backend
 
 2. **Create virtual environment**
 python -m venv venv
@@ -223,7 +223,7 @@ DATABASE_URL=<provided by Railway PostgreSQL>
 
 6. Deploy!
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/kishorep26/smart-city-backend)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/kishorep26/sentinel-command-backend)
 
 ---
 

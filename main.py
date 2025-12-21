@@ -112,7 +112,7 @@ def _ensure_initialized():
 
 
 # Create FastAPI app
-app = FastAPI(title="Smart City Emergency Response API")
+app = FastAPI(title="Sentinel Command Backend API")
 
 # Add CORS middleware
 app.add_middleware(
@@ -349,7 +349,7 @@ def simulate_tick(db: Session):
 
 @app.get("/")
 def root():
-    return {"message": "Smart City Emergency Response API", "status": "online"}
+    return {"message": "Sentinel Command Backend API", "status": "online"}
 
 
 @app.get("/health")
@@ -759,7 +759,7 @@ def search_address(query: str = Query(..., min_length=3)):
     try:
         url = "https://nominatim.openstreetmap.org/search"
         params = {"q": query, "format": "json", "limit": 5}
-        resp = httpx.get(url, params=params, headers={"User-Agent": "smart-city-backend"})
+        resp = httpx.get(url, params=params, headers={"User-Agent": "sentinel-command-backend"})
         resp.raise_for_status()
         data = resp.json()
 

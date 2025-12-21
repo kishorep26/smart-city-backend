@@ -8,7 +8,7 @@ load_dotenv()
 
 # You can change this to your Vercel URL if testing production
 # API_URL = "http://127.0.0.1:8000" 
-API_URL = "https://smart-city-backend-lime.vercel.app" 
+API_URL = "https://sentinel-command-backend.vercel.app" 
 
 print(f"🧪 Testing AI Dispatcher at: {API_URL}")
 print("-" * 50)
